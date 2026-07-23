@@ -15,11 +15,13 @@ coverage/
 
 # Obsidian plugin runtime data
 data.json
+.obsidian/
 
 # Secrets and local environment settings
 .env
 .env.*
 !.env.example
+docs/凭据.txt
 
 # Logs
 *.log

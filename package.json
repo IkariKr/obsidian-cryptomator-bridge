@@ -1,0 +1,25 @@
+{
+  "name": "obsidian-cryptomator-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows desktop Obsidian integration layer for one Cryptomator vault",
+  "type": "module",
+  "files": [
+    "main.js",
+    "manifest.json"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "check": "tsc --noEmit",
+    "release:check": "node tools/release-check.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.8.7",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

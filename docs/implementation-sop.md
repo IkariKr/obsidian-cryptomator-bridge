@@ -37,7 +37,7 @@
 
 - Windows 10 或 Windows 11、Obsidian Desktop、Cryptomator CLI `0.6.2`、WinFsp。首版只接受经验证的 CLI `0.6.2`，不对其他版本作兼容承诺。
 - 一个与个人资料隔离、可删除的 Cryptomator 测试 Vault。
-- 一个空的本地挂载目录；它不能位于 OneDrive、Dropbox、Google Drive 或其他同步根目录中。
+- 一个本地挂载目标；它不能位于 OneDrive、Dropbox、Google Drive 或其他同步根目录中。对于已验证的 `WinFspMountProvider`，该目标必须是已存在父目录下**尚不存在**的路径节点，不能预先创建为空目录。
 - 一个已经在 Obsidian 中注册的测试 Vault 名称。
 
 ### 步骤
@@ -98,8 +98,8 @@
 
 ### 步骤
 
-1. 在 `checking` 状态验证 CLI 可执行文件、密文 Vault 目录、空挂载目录、mounter 标识和 `privateVaultName`；运行时重新确认 CLI 版本为支持的 `0.6.2`，并重新校验 mounter 仍由 `list-mounters` 提供。
-2. 将路径规范化为绝对路径后拒绝以下情况：两个路径相同或互相包含、挂载目录位于当前 Obsidian Vault 内、路径是盘符/文件系统根、路径经过 junction/reparse point、挂载目录非空或不可写。云盘同步根无法被通用算法完整识别；对已知同步根做检测，对未知情况必须明确警告并要求用户确认，不能宣称自动识别全部同步服务。
+1. 在 `checking` 状态验证 CLI 可执行文件、密文 Vault 目录、挂载目标及其父目录、mounter 标识和 `privateVaultName`；运行时重新确认 CLI 版本为支持的 `0.6.2`，并重新校验 mounter 仍由 `list-mounters` 提供。
+2. 将路径规范化为绝对路径后拒绝以下情况：两个路径相同或互相包含、挂载目标位于当前 Obsidian Vault 内、路径是盘符/文件系统根、路径或其父目录经过 junction/reparse point、父目录不可写。对于已验证的 `WinFspMountProvider`，挂载目标必须不存在且父目录已存在；不得预先创建空目录。其他 mounter 必须先在阶段 0 记录其实际要求后才能支持。云盘同步根无法被通用算法完整识别；对已知同步根做检测，对未知情况必须明确警告并要求用户确认，不能宣称自动识别全部同步服务。
 3. 用 Password Modal 收集密码；只把密码交给 CLI 进程的 `stdin`，写入后立即关闭输入流并清除可清除的引用。JavaScript 字符串无法保证物理清零，因此不得声称已安全擦除内存。
 4. 使用 `child_process.spawn` 或等价 Electron/Node API 启动 CLI：参数必须是数组、`shell` 必须为 `false`、窗口必须隐藏，且不得把密码放入 `args` 或 `env`。stdin 写入必须包含明确的行结束符，并在一次写入后结束流。
 5. 使用有限超时轮询挂载目录的可访问性。仅在可访问时转换到 `mounted`；stdout/stderr 必须限制缓冲大小、先脱敏再存储或显示，并禁止记录完整原始输出。
