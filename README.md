@@ -39,6 +39,8 @@
 
 后续插件将配置一个密文 Vault 路径、一个挂载目录和用户已安装的 Cryptomator CLI 路径。云盘客户端只能同步 Cryptomator 的密文目录，不能同步解锁后的挂载目录。
 
+完整的分阶段实施手册见 [实现 SOP](docs/implementation-sop.md)。
+
 ## English
 
 `Obsidian Cryptomator Bridge` is a Windows desktop Obsidian plugin project. It aims to provide a consistent entry point and lifecycle management for one Cryptomator-protected, standalone Obsidian vault without implementing encryption itself.
@@ -75,6 +77,8 @@ Check prerequisites -> enter password -> mount with CLI -> verify mount -> open 
 ### Planned Configuration
 
 The future plugin will configure one encrypted vault path, one mount directory, and the path to a user-installed Cryptomator CLI. A cloud client must synchronize only Cryptomator's encrypted storage directory, never the unlocked mount directory.
+
+See the Chinese [implementation SOP](docs/implementation-sop.md) for the phased execution guide.
 
 ## License
 
