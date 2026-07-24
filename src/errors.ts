@@ -30,6 +30,13 @@ export class MountError extends BridgeError {
   }
 }
 
+/** 文件夹迁移或校验失败。 / Folder migration or verification failed. */
+export class MigrationError extends BridgeError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, 'migration', options);
+  }
+}
+
 /** 检测到当前实例不拥有的挂载。 / A mount not owned by this instance was detected. */
 export class UnownedMountError extends BridgeError {
   constructor() {

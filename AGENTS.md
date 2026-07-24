@@ -4,8 +4,10 @@
 
 - This repository is an Obsidian plugin integration layer, not an encryption product.
 - Target Windows desktop only until the project explicitly expands scope.
-- Depend on user-installed Cryptomator CLI and WinFsp. Do not bundle, download, install, modify, or reimplement either dependency.
-- Support one configured private vault in the first functional release.
+- Depend on user-installed Cryptomator Desktop, Cryptomator CLI, and WinFsp. Do not bundle, download, install, modify, or reimplement any dependency.
+- Support one configured private vault in the first functional release. The bridge runs in a non-private control Vault and opens the mounted private Vault in a separate Obsidian window.
+- Treat a selected folder's “encryption” as onboarding or migration into a separate Cryptomator Vault, never in-place encryption. Vault creation remains a Cryptomator Desktop responsibility; any source deletion requires explicit confirmation after copy verification.
+- With the Nutstore Obsidian WebDAV plugin, the encrypted Vault must be inside the current control Vault's synced scope; the mount path must be local and outside the control Vault. Never enable the Nutstore sync plugin in the mounted private Vault. Cryptomator encrypts writes continuously; locking only unmounts the plaintext view.
 
 ## TypeScript and Obsidian
 
@@ -20,6 +22,7 @@
 - Validate configured executable, encrypted-vault, and mount paths before process creation.
 - Pass the unlock password only through the child process standard input. Never persist, log, interpolate, copy, or expose it through command-line arguments or environment variables.
 - Keep password lifetime minimal and clear references after handing it to the process where JavaScript allows. Do not add password caching, automatic unlock, or keychain storage without an explicit security design review.
+- Automatic locking after system idle time or Windows lock-screen is in scope. It must use the same safe unmount path as a manual lock and surface an unmount failure as recoverable; it must never imply that files were re-encrypted at lock time.
 - Treat unexpected CLI exit, unavailable WinFsp, inaccessible mount directories, and open file handles during unmount as user-visible recoverable states.
 
 ## Testing

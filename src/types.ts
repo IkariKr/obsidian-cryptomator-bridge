@@ -11,17 +11,30 @@ export type BridgeState =
   | 'unmounting'
   | 'error';
 
+/** 自动锁定策略；0 分钟表示关闭空闲锁定。 / Automatic-lock policy; zero minutes disables idle locking. */
+export interface AutoLockSettings {
+  idleLockMinutes: number;
+  lockOnScreenLock: boolean;
+}
+
 /**
  * 唯一私密 Vault 的非敏感配置；不包含密码。
  * Non-sensitive configuration for the one private vault; does not contain a password.
  */
 export interface BridgeSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   cliPath: string;
-  encryptedVaultPath: string;
+  syncRootPath: string;
+  encryptedVaultRelativePath: string;
   mountPath: string;
   mounterId: string;
   privateVaultName: string;
+  autoLock: AutoLockSettings;
+}
+
+/** 已解析的运行时配置；密文 Vault 绝对路径不作为持久化契约。 / Resolved runtime configuration; the encrypted Vault absolute path is not persisted. */
+export interface ResolvedBridgeSettings extends BridgeSettings {
+  encryptedVaultPath: string;
 }
 
 /**

@@ -3,7 +3,7 @@
   "name": "Cryptomator Bridge",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Open one Cryptomator-protected Obsidian vault through the user-installed Cryptomator CLI.",
+  "description": "Unlock, open, and automatically lock one Cryptomator-protected Obsidian vault through the user-installed CLI.",
   "author": "Obsidian Cryptomator Bridge contributors",
   "authorUrl": "https://github.com/",
   "isDesktopOnly": true

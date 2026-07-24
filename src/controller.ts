@@ -5,7 +5,7 @@ import type { PrerequisiteResult } from './prerequisites';
 import { CliSupervisor } from './cliSupervisor';
 import { VaultLauncher } from './vaultLauncher';
 import { BridgeStateMachine } from './stateMachine';
-import type { BridgeSettings, BridgeRuntimeState } from './types';
+import type { BridgeSettings, BridgeRuntimeState, ResolvedBridgeSettings } from './types';
 
 /** 控制器依赖注入项。 / Dependency injection options for the controller. */
 export interface ControllerOptions {
@@ -21,7 +21,7 @@ export interface ControllerOptions {
 
 interface SupervisorPort {
   readonly ownsProcess: boolean;
-  unlock(settings: BridgeSettings, password: string): Promise<unknown>;
+  unlock(settings: ResolvedBridgeSettings, password: string): Promise<unknown>;
   stop(mountPath: string): Promise<unknown>;
   cleanup(mountPath: string): Promise<void>;
 }

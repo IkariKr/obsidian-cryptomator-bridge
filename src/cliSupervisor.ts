@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { MountError, UnownedMountError } from './errors';
 import { RedactedDiagnostics } from './diagnostics';
-import type { BridgeSettings } from './types';
+import type { ResolvedBridgeSettings } from './types';
 
 const DEFAULT_MOUNT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
@@ -33,7 +33,7 @@ export interface UnlockResult {
   diagnostics: { stdout: ReturnType<RedactedDiagnostics['summary']>; stderr: ReturnType<RedactedDiagnostics['summary']> };
 }
 
-function buildUnlockArgs(settings: BridgeSettings): string[] {
+function buildUnlockArgs(settings: ResolvedBridgeSettings): string[] {
   return [
     'unlock',
     '--password:stdin',
@@ -47,7 +47,7 @@ function buildUnlockArgs(settings: BridgeSettings): string[] {
  * 构造结构化 CLI 参数数组；密码永远不在参数中。
  * Build structured CLI argument arrays; the password is never included in arguments.
  */
-export function createUnlockArgs(settings: BridgeSettings): readonly string[] {
+export function createUnlockArgs(settings: ResolvedBridgeSettings): readonly string[] {
   return buildUnlockArgs(settings);
 }
 
@@ -133,7 +133,7 @@ export class CliSupervisor {
     return this.child !== null;
   }
 
-  async unlock(settings: BridgeSettings, password: string): Promise<UnlockResult> {
+  async unlock(settings: ResolvedBridgeSettings, password: string): Promise<UnlockResult> {
     if (this.child) {
       throw new MountError('当前实例已经持有一个 CLI 进程。');
     }

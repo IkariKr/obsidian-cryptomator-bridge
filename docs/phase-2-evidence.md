@@ -4,7 +4,7 @@
 
 ## 交付物
 
-- `src/pathValidation.ts`：绝对路径、路径重叠、根目录、reparse/junction、父目录可写、空挂载节点和已知同步根检查。
+- `src/pathValidation.ts`：当前控制 Vault 内的同步范围加相对密文 Vault 路径解析、路径重叠、根目录、reparse/junction、父目录可写、空挂载节点和已知同步根检查。
 - `src/prerequisites.ts`：CLI `0.6.2`、实际 mounter、Vault 结构和路径前置检查。
 - `src/cliSupervisor.ts`：结构化参数、`shell:false`、隐藏窗口、stdin 一次写入、有限挂载轮询、进程所有权和优雅 `SIGINT` 停止。
 - `src/diagnostics.ts`：跨 chunk 脱敏、有界诊断和截断标记。

@@ -4,11 +4,11 @@ import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { validatePaths } from '../src/pathValidation';
-import { checkPrerequisites, type ProbeResult } from '../src/prerequisites';
+import { checkPrerequisites, discoverWinFspMounterId, type ProbeResult } from '../src/prerequisites';
 import { CliSupervisor, createUnlockArgs, type SpawnProcess } from '../src/cliSupervisor';
 import { RedactedDiagnostics } from '../src/diagnostics';
 import { VaultLauncher } from '../src/vaultLauncher';
-import type { BridgeSettings } from '../src/types';
+import type { BridgeSettings, ResolvedBridgeSettings } from '../src/types';
 
 const roots: string[] = [];
 
@@ -19,9 +19,10 @@ afterEach(async () => {
 async function fixture(): Promise<{ root: string; settings: BridgeSettings }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-stage2-'));
   roots.push(root);
-  const vault = path.join(root, 'encrypted');
+  const syncRoot = path.join(root, 'nutstore');
+  const vault = path.join(syncRoot, 'encrypted');
   const mountParent = path.join(root, 'mount-parent');
-  await mkdir(vault);
+  await mkdir(vault, { recursive: true });
   await mkdir(mountParent);
   await Promise.all([
     writeFile(path.join(root, 'cryptomator-cli.exe'), ''),
@@ -32,13 +33,22 @@ async function fixture(): Promise<{ root: string; settings: BridgeSettings }> {
   return {
     root,
     settings: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       cliPath: path.join(root, 'cryptomator-cli.exe'),
-      encryptedVaultPath: vault,
+      syncRootPath: syncRoot,
+      encryptedVaultRelativePath: 'encrypted',
       mountPath: path.join(mountParent, 'new-mount'),
       mounterId: 'org.cryptomator.frontend.fuse.mount.WinFspMountProvider',
       privateVaultName: 'Private Test Vault',
+      autoLock: { idleLockMinutes: 15, lockOnScreenLock: true },
     },
+  };
+}
+
+function resolveSettings(settings: BridgeSettings): ResolvedBridgeSettings {
+  return {
+    ...settings,
+    encryptedVaultPath: path.join(settings.syncRootPath, settings.encryptedVaultRelativePath),
   };
 }
 
@@ -52,36 +62,54 @@ describe('stage 2 path and CLI boundaries', () => {
 
   it('rejects overlapping paths and an existing mount node', async () => {
     const { settings } = await fixture();
-    await expect(validatePaths({ ...{ settings: { ...settings, mountPath: path.join(settings.encryptedVaultPath, 'mount') } } })).rejects.toThrow(
+    await expect(validatePaths({ ...{ settings: { ...settings, mountPath: path.join(settings.syncRootPath, 'encrypted', 'mount') } } })).rejects.toThrow(
       '不能相同或互相包含',
     );
     await mkdir(settings.mountPath);
     await expect(validatePaths({ settings })).rejects.toThrow('预先不存在');
   });
 
-  it('rejects a mount path inside the current Obsidian vault', async () => {
+  it('rejects a ciphertext Vault path that escapes the configured sync root', async () => {
     const { settings } = await fixture();
-    await expect(validatePaths({ settings, currentObsidianVaultPath: path.dirname(settings.mountPath) })).rejects.toThrow(
+    await expect(validatePaths({ settings: { ...settings, encryptedVaultRelativePath: '..' } })).rejects.toThrow(
+      '同步根目录内的相对路径',
+    );
+  });
+
+  it('rejects a mount path inside the current Obsidian vault', async () => {
+    const { settings, root } = await fixture();
+    await expect(validatePaths({ settings, currentObsidianVaultPath: root })).rejects.toThrow(
       '当前 Obsidian Vault 内',
     );
   });
 
+  it('requires the Nutstore sync root to be inside the current control Vault', async () => {
+    const { settings, root } = await fixture();
+    await expect(validatePaths({ settings, currentObsidianVaultPath: path.join(root, 'control') })).rejects.toThrow(
+      '同步根目录必须位于当前控制 Vault 内',
+    );
+    await expect(validatePaths({ settings, currentObsidianVaultPath: settings.syncRootPath })).resolves.toBeDefined();
+  });
+
   it('constructs structured args without a password', () => {
     const settings = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       cliPath: 'C:\\Cryptomator\\cryptomator-cli.exe',
-      encryptedVaultPath: 'C:\\Vault',
+      syncRootPath: 'C:\\Nutstore',
+      encryptedVaultRelativePath: 'Vault',
+      encryptedVaultPath: 'C:\\Nutstore\\Vault',
       mountPath: 'C:\\Mount',
       mounterId: 'WinFspMountProvider',
       privateVaultName: 'Private',
-    } satisfies BridgeSettings;
+      autoLock: { idleLockMinutes: 15, lockOnScreenLock: true },
+    } satisfies ResolvedBridgeSettings;
     const args = createUnlockArgs(settings);
     expect(args).toEqual([
       'unlock',
       '--password:stdin',
       '--mounter=WinFspMountProvider',
       '--mountPoint=C:\\Mount',
-      'C:\\Vault',
+      'C:\\Nutstore\\Vault',
     ]);
     expect(args.join(' ')).not.toContain('secret');
   });
@@ -118,12 +146,13 @@ describe('stage 2 path and CLI boundaries', () => {
     });
     const supervisor = new CliSupervisor({ mountTimeoutMs: 2_000, spawnProcess });
     const testInput = 'x'.repeat(8);
-    await supervisor.unlock(settings, testInput);
+    const resolvedSettings = resolveSettings(settings);
+    await supervisor.unlock(resolvedSettings, testInput);
     expect(child.stdin.payload?.subarray(-1).toString('hex')).toBe('0a');
     expect(child.stdin.payload?.toString('utf8')).toBe(`${testInput}\n`);
     expect(spawnCalls[0]).toEqual({
-      command: settings.cliPath,
-      args: createUnlockArgs(settings),
+      command: resolvedSettings.cliPath,
+      args: createUnlockArgs(resolvedSettings),
       options: { shell: false, windowsHide: true, detached: false, stdio: ['pipe', 'pipe', 'pipe'] },
     });
     await supervisor.stop(settings.mountPath);
@@ -152,6 +181,27 @@ describe('stage 2 path and CLI boundaries', () => {
     const result = await checkPrerequisites(settings, undefined, probe);
     expect(result.cliVersion).toBe('0.6.2');
     expect(result.mounters).toContain(settings.mounterId);
+  });
+
+  it('discovers the actual WinFsp mounter ID instead of guessing it', async () => {
+    const probe = async (_cliPath: string, args: string[]): Promise<ProbeResult> => ({
+      code: 0,
+      signal: null,
+      stdout: args[0] === 'list-mounters' ? 'org.cryptomator.frontend.fuse.mount.WinFspMountProvider\n' : '',
+      stderr: '',
+    });
+    await expect(discoverWinFspMounterId('C:\\Cryptomator\\cryptomator-cli.exe', probe))
+      .resolves.toBe('org.cryptomator.frontend.fuse.mount.WinFspMountProvider');
+  });
+
+  it('does not choose an ambiguous WinFsp mounter list', async () => {
+    const probe = async (): Promise<ProbeResult> => ({
+      code: 0,
+      signal: null,
+      stdout: 'first.WinFspMountProvider\nsecond.WinFspMountProvider\n',
+      stderr: '',
+    });
+    await expect(discoverWinFspMounterId('C:\\Cryptomator\\cryptomator-cli.exe', probe)).resolves.toBeUndefined();
   });
 
   it('rejects an unsupported CLI version or mounter', async () => {

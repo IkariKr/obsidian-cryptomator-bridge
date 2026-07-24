@@ -12,13 +12,15 @@ afterEach(async () => {
 });
 
 function settings(mountPath: string): BridgeSettings {
-  return {
-    schemaVersion: 1,
+    return {
+    schemaVersion: 2,
     cliPath: 'C:\\Cryptomator\\cryptomator-cli.exe',
-    encryptedVaultPath: 'C:\\Vault',
+    syncRootPath: 'C:\\Nutstore',
+    encryptedVaultRelativePath: 'Vault',
     mountPath,
     mounterId: 'WinFspMountProvider',
     privateVaultName: 'Private Test Vault',
+    autoLock: { idleLockMinutes: 15, lockOnScreenLock: true },
   };
 }
 
@@ -29,7 +31,9 @@ function prerequisiteResult(current: BridgeSettings) {
     warnings: [],
     normalizedSettings: {
       cliPath: current.cliPath,
-      encryptedVaultPath: current.encryptedVaultPath,
+      syncRootPath: current.syncRootPath,
+      encryptedVaultRelativePath: current.encryptedVaultRelativePath,
+      encryptedVaultPath: 'C:\\Nutstore\\Vault',
       mountPath: current.mountPath,
     },
   };
