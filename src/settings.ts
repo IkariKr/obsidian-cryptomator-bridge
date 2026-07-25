@@ -1,17 +1,25 @@
-import os from 'node:os';
 import path from 'node:path';
-import type { AutoLockSettings, BridgeSettings } from './types';
+import type { AutoLockSettings, BridgeSettings, VaultRecord } from './types';
+import { detectWindowsCliPath, discoverMounters } from './prerequisites';
 
-export const SETTINGS_SCHEMA_VERSION = 2 as const;
+export const SETTINGS_SCHEMA_VERSION = 3 as const;
 
 export const DEFAULT_AUTO_LOCK_SETTINGS: AutoLockSettings = {
   idleLockMinutes: 15,
   lockOnScreenLock: true,
 };
 
-/** 首次配置使用的安全默认值；不会自动创建 Vault 或挂载目录。 / Safe first-use defaults; no Vault or mount directory is created automatically. */
-export const DEFAULT_ENCRYPTED_VAULT_RELATIVE_PATH = 'PrivateNotes.cryptomator';
-export const DEFAULT_MOUNT_PATH = path.join(os.tmpdir(), 'obsidian-cryptomator-bridge-mount');
+/** 加密文件夹预留后缀，不得由用户修改。 / Reserved suffixes for encrypted folders; must not be user-editable. */
+export const ENCRYPTED_VAULT_SUFFIX = '.cryptomator' as const;
+export const MOUNT_SUFFIX = '.cryptomator-mount' as const;
+
+/** 生成不依赖外部库的唯一 ID。 / Generate a unique ID without external library dependencies. */
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /**
  * 默认设置不包含密码或本机路径。
@@ -21,12 +29,20 @@ export const DEFAULT_SETTINGS: BridgeSettings = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
   cliPath: '',
   syncRootPath: '',
-  encryptedVaultRelativePath: '',
-  mountPath: '',
   mounterId: '',
-  privateVaultName: '',
+  vaultRecords: [],
   autoLock: { ...DEFAULT_AUTO_LOCK_SETTINGS },
 };
+
+/** 根据 folderName 派生密文相对路径。 / Derive encrypted relative path from folderName. */
+export function deriveEncryptedRelativePath(folderName: string): string {
+  return `${folderName}${ENCRYPTED_VAULT_SUFFIX}`;
+}
+
+/** 根据 folderName 派生挂载相对路径。 / Derive mount relative path from folderName. */
+export function deriveMountRelativePath(folderName: string): string {
+  return `${folderName}${MOUNT_SUFFIX}`;
+}
 
 /** 设置校验结果。 / Result of settings validation. */
 export type SettingsValidationResult =
@@ -34,8 +50,8 @@ export type SettingsValidationResult =
   | { valid: false; errors: string[] };
 
 /**
- * 将当前及历史设置整理为最新设置版本；缺少版本号的首版数据按 v1 迁移。
- * Normalize current and legacy settings to the latest schema; versionless first-release data migrates to v1.
+ * 将当前及历史设置整理为最新设置版本；缺少版本号的首版数据按 v1→v2→v3 迁移。
+ * Normalize current and legacy settings to the latest schema; versionless first-release data migrates through v1→v2→v3.
  */
 export function migrateSettings(input: unknown): unknown {
   if (!input || typeof input !== 'object') {
@@ -43,20 +59,54 @@ export function migrateSettings(input: unknown): unknown {
   }
 
   const raw = input as Record<string, unknown>;
-  if (raw.schemaVersion === undefined || raw.schemaVersion === 1) {
+  const version = typeof raw.schemaVersion === 'number' ? raw.schemaVersion : undefined;
+
+  // v1 / versionless → v2（先迁移为 v2，再走 v2→v3）
+  if (version === undefined || version === 1) {
     const legacyEncryptedVaultPath = typeof raw.encryptedVaultPath === 'string' ? raw.encryptedVaultPath.trim() : '';
     const separatorIndex = Math.max(legacyEncryptedVaultPath.lastIndexOf('\\'), legacyEncryptedVaultPath.lastIndexOf('/'));
     const syncRootPath = separatorIndex > 0 ? legacyEncryptedVaultPath.slice(0, separatorIndex) : '';
     const encryptedVaultRelativePath = separatorIndex > 0 ? legacyEncryptedVaultPath.slice(separatorIndex + 1) : '';
-    return {
-      ...raw,
-      schemaVersion: SETTINGS_SCHEMA_VERSION,
-      syncRootPath: typeof raw.syncRootPath === 'string' ? raw.syncRootPath : syncRootPath,
-      encryptedVaultRelativePath: typeof raw.encryptedVaultRelativePath === 'string'
-        ? raw.encryptedVaultRelativePath
-        : encryptedVaultRelativePath,
-      autoLock: raw.autoLock ?? { ...DEFAULT_AUTO_LOCK_SETTINGS },
-    };
+    raw.schemaVersion = 2;
+    raw.syncRootPath = typeof raw.syncRootPath === 'string' ? raw.syncRootPath : syncRootPath;
+    raw.encryptedVaultRelativePath = typeof raw.encryptedVaultRelativePath === 'string'
+      ? raw.encryptedVaultRelativePath
+      : encryptedVaultRelativePath;
+    raw.autoLock = raw.autoLock ?? { ...DEFAULT_AUTO_LOCK_SETTINGS };
+  }
+
+  // v2 → v3：将旧单 Vault 配置转为 vaultRecords 列表
+  if (raw.schemaVersion === 2) {
+    const vaultRecords: VaultRecord[] = [];
+    const oldEncryptedRelPath = typeof raw.encryptedVaultRelativePath === 'string' ? (raw.encryptedVaultRelativePath as string).trim() : '';
+    const oldVaultName = typeof raw.privateVaultName === 'string' ? (raw.privateVaultName as string).trim() : '';
+
+    // 从旧字段提取 folderName：去掉 .cryptomator 后缀或直接使用 vaultName
+    let folderName = '';
+    if (oldEncryptedRelPath) {
+      folderName = oldEncryptedRelPath.endsWith(ENCRYPTED_VAULT_SUFFIX)
+        ? oldEncryptedRelPath.slice(0, -ENCRYPTED_VAULT_SUFFIX.length)
+        : oldEncryptedRelPath;
+    } else if (oldVaultName) {
+      folderName = oldVaultName;
+    }
+
+    if (folderName) {
+      vaultRecords.push({
+        id: generateId(),
+        folderName,
+        nutstoreExclusionConfirmed: false,
+      });
+    }
+
+    // 删除旧字段，避免校验报错
+    delete raw.encryptedVaultRelativePath;
+    delete raw.mountPath;
+    delete raw.privateVaultName;
+
+    raw.schemaVersion = 3;
+    raw.vaultRecords = vaultRecords;
+    raw.autoLock = raw.autoLock ?? { ...DEFAULT_AUTO_LOCK_SETTINGS };
   }
 
   return raw;
@@ -87,6 +137,70 @@ function validateAutoLock(value: unknown, errors: string[]): AutoLockSettings | 
   };
 }
 
+/** 校验单条 VaultRecord。 / Validate a single VaultRecord. */
+function validateVaultRecord(record: unknown, index: number, errors: string[]): VaultRecord | null {
+  if (!record || typeof record !== 'object') {
+    errors.push(`vaultRecords[${index}] 必须是对象。`);
+    return null;
+  }
+  const r = record as Record<string, unknown>;
+
+  if (!isNonEmptyString(r.id)) {
+    errors.push(`vaultRecords[${index}].id 不能为空。`);
+  }
+  const folderName = typeof r.folderName === 'string' ? r.folderName.trim() : '';
+  if (!folderName) {
+    errors.push(`vaultRecords[${index}].folderName 不能为空。`);
+  } else if (/[\\/\0]/u.test(folderName)) {
+    errors.push(`vaultRecords[${index}].folderName 包含非法路径分隔符或空字符。`);
+  } else if (folderName.endsWith(ENCRYPTED_VAULT_SUFFIX) || folderName.endsWith(MOUNT_SUFFIX)) {
+    errors.push(`vaultRecords[${index}].folderName 不得包含 ${ENCRYPTED_VAULT_SUFFIX} 或 ${MOUNT_SUFFIX} 后缀。`);
+  }
+  if (typeof r.nutstoreExclusionConfirmed !== 'boolean') {
+    errors.push(`vaultRecords[${index}].nutstoreExclusionConfirmed 必须是布尔值。`);
+  }
+
+  if (errors.length > 0) {
+    return null;
+  }
+
+  return {
+    id: r.id as string,
+    folderName,
+    nutstoreExclusionConfirmed: r.nutstoreExclusionConfirmed as boolean,
+  };
+}
+
+/** 校验 vaultRecords 列表；不允许重复 id 或 folderName。 / Validate vaultRecords list; duplicate id or folderName is rejected. */
+function validateVaultRecords(value: unknown, errors: string[]): VaultRecord[] | null {
+  if (!Array.isArray(value)) {
+    errors.push('vaultRecords 必须是数组。');
+    return null;
+  }
+  const records: VaultRecord[] = [];
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const record = validateVaultRecord(value[i], i, errors);
+    if (!record) {
+      continue;
+    }
+    if (seenIds.has(record.id)) {
+      errors.push(`vaultRecords 包含重复 id：${record.id}。`);
+    }
+    if (seenNames.has(record.folderName)) {
+      errors.push(`vaultRecords 包含重复 folderName：${record.folderName}。`);
+    }
+    seenIds.add(record.id);
+    seenNames.add(record.folderName);
+    records.push(record);
+  }
+  if (errors.length > 0) {
+    return null;
+  }
+  return records;
+}
+
 /**
  * 校验并迁移设置数据；未知字段被忽略，密码字段永远不会被接受。
  * Validate and migrate settings; unknown fields are ignored and password fields are never accepted.
@@ -98,16 +212,14 @@ export function validateSettings(input: unknown): SettingsValidationResult {
 
   const raw = input as Record<string, unknown>;
   const errors: string[] = [];
-  const fields: Array<Exclude<keyof BridgeSettings, 'schemaVersion' | 'autoLock'>> = [
+
+  const stringFields: Array<'cliPath' | 'syncRootPath' | 'mounterId'> = [
     'cliPath',
     'syncRootPath',
-    'encryptedVaultRelativePath',
-    'mountPath',
     'mounterId',
-    'privateVaultName',
   ];
 
-  for (const field of fields) {
+  for (const field of stringFields) {
     if (!isNonEmptyString(raw[field])) {
       errors.push(`${field} 不能为空。`);
     }
@@ -118,12 +230,13 @@ export function validateSettings(input: unknown): SettingsValidationResult {
   }
 
   const autoLock = validateAutoLock(raw.autoLock, errors);
+  const vaultRecords = validateVaultRecords(raw.vaultRecords, errors);
 
   if ('password' in raw || 'passphrase' in raw || 'secret' in raw) {
     errors.push('密码不得属于插件设置。');
   }
 
-  if (errors.length > 0 || !autoLock) {
+  if (errors.length > 0 || !autoLock || !vaultRecords) {
     return { valid: false, errors };
   }
 
@@ -133,10 +246,8 @@ export function validateSettings(input: unknown): SettingsValidationResult {
       schemaVersion: SETTINGS_SCHEMA_VERSION,
       cliPath: (raw.cliPath as string).trim(),
       syncRootPath: (raw.syncRootPath as string).trim(),
-      encryptedVaultRelativePath: (raw.encryptedVaultRelativePath as string).trim(),
-      mountPath: (raw.mountPath as string).trim(),
       mounterId: (raw.mounterId as string).trim(),
-      privateVaultName: (raw.privateVaultName as string).trim(),
+      vaultRecords,
       autoLock,
     },
   };
@@ -164,14 +275,42 @@ export function applyCurrentVaultDefaults(settings: BridgeSettings, currentVault
 }
 
 /**
- * 填充首次使用的静态路径默认值；已有明确配置不会被静默覆盖。
- * Fills static first-use path defaults; existing explicit values are never silently overwritten.
+ * 异步自动检测并填充 CLI 路径和挂载器 ID；已有配置不被覆盖。
+ * Auto-detect and fill CLI path and mounter ID; never overwrites existing values.
  */
-export function applyStaticDefaults(settings: BridgeSettings, currentVaultPath?: string): BridgeSettings {
-  const withSyncRoot = applyCurrentVaultDefaults(settings, currentVaultPath);
-  return {
-    ...withSyncRoot,
-    encryptedVaultRelativePath: withSyncRoot.encryptedVaultRelativePath || DEFAULT_ENCRYPTED_VAULT_RELATIVE_PATH,
-    mountPath: withSyncRoot.mountPath || DEFAULT_MOUNT_PATH,
-  };
+export async function applyAutoDetectedDefaults(settings: BridgeSettings): Promise<BridgeSettings> {
+  let updated = { ...settings };
+
+  // 自动检测 CLI 路径
+  if (!updated.cliPath) {
+    const detectedCli = await detectWindowsCliPath();
+    if (detectedCli) {
+      updated = { ...updated, cliPath: detectedCli };
+    }
+  }
+
+  // 自动检测挂载器 ID
+  if (!updated.mounterId && updated.cliPath) {
+    const mounters = await discoverMounters(updated.cliPath);
+    if (mounters.length > 0) {
+      updated = { ...updated, mounterId: mounters[0] };
+    }
+  }
+
+  return updated;
+}
+
+/**
+ * 解析所有记录的派生绝对路径。
+ * Resolve derived absolute paths for all records.
+ */
+export function resolveVaultRecords(
+  settings: BridgeSettings,
+): import('./types').ResolvedVaultRecord[] {
+  const syncRoot = path.resolve(settings.syncRootPath);
+  return settings.vaultRecords.map((record) => ({
+    ...record,
+    encryptedVaultPath: path.resolve(syncRoot, deriveEncryptedRelativePath(record.folderName)),
+    mountPath: path.resolve(syncRoot, deriveMountRelativePath(record.folderName)),
+  }));
 }

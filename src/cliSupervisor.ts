@@ -3,7 +3,6 @@ import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { MountError, UnownedMountError } from './errors';
 import { RedactedDiagnostics } from './diagnostics';
-import type { ResolvedBridgeSettings } from './types';
 
 const DEFAULT_MOUNT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
@@ -14,10 +13,19 @@ export interface CliExitResult {
   signal: NodeJS.Signals | null;
 }
 
+/** 解锁所需参数。 / Parameters required for unlock. */
+export interface UnlockParams {
+  cliPath: string;
+  encryptedVaultPath: string;
+  mountPath: string;
+  mounterId: string;
+}
+
 /** 监督器可配置项。 / Configurable options for the supervisor. */
 export interface SupervisorOptions {
   mountTimeoutMs?: number;
   onUnexpectedExit?: (exit: CliExitResult) => void;
+  onExit?: (code: number | null) => void;
   spawnProcess?: SpawnProcess;
 }
 
@@ -33,22 +41,18 @@ export interface UnlockResult {
   diagnostics: { stdout: ReturnType<RedactedDiagnostics['summary']>; stderr: ReturnType<RedactedDiagnostics['summary']> };
 }
 
-function buildUnlockArgs(settings: ResolvedBridgeSettings): string[] {
-  return [
-    'unlock',
-    '--password:stdin',
-    `--mounter=${settings.mounterId}`,
-    `--mountPoint=${settings.mountPath}`,
-    settings.encryptedVaultPath,
-  ];
-}
-
 /**
  * 构造结构化 CLI 参数数组；密码永远不在参数中。
  * Build structured CLI argument arrays; the password is never included in arguments.
  */
-export function createUnlockArgs(settings: ResolvedBridgeSettings): readonly string[] {
-  return buildUnlockArgs(settings);
+export function createUnlockArgs(params: UnlockParams): readonly string[] {
+  return [
+    'unlock',
+    '--password:stdin',
+    `--mounter=${params.mounterId}`,
+    `--mountPoint=${params.mountPath}`,
+    params.encryptedVaultPath,
+  ];
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -133,17 +137,21 @@ export class CliSupervisor {
     return this.child !== null;
   }
 
-  async unlock(settings: ResolvedBridgeSettings, password: string): Promise<UnlockResult> {
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
+
+  async unlock(params: UnlockParams, password: string): Promise<UnlockResult> {
     if (this.child) {
       throw new MountError('当前实例已经持有一个 CLI 进程。');
     }
-    if (await canAccess(settings.mountPath)) {
+    if (await canAccess(params.mountPath)) {
       throw new UnownedMountError();
     }
 
-    const stdout = new RedactedDiagnostics([settings.cliPath, settings.encryptedVaultPath, settings.mountPath], [password]);
-    const stderr = new RedactedDiagnostics([settings.cliPath, settings.encryptedVaultPath, settings.mountPath], [password]);
-    const child = this.spawnProcess(settings.cliPath, buildUnlockArgs(settings), {
+    const stdout = new RedactedDiagnostics([params.cliPath, params.encryptedVaultPath, params.mountPath], [password]);
+    const stderr = new RedactedDiagnostics([params.cliPath, params.encryptedVaultPath, params.mountPath], [password]);
+    const child = this.spawnProcess(params.cliPath, createUnlockArgs(params), {
       shell: false,
       windowsHide: true,
       detached: false,
@@ -156,6 +164,7 @@ export class CliSupervisor {
       if (!this.stopRequested) {
         this.options.onUnexpectedExit?.(exit);
       }
+      this.options.onExit?.(exit.code);
     }).catch(() => undefined);
     child.stdout.on('data', (chunk: Buffer) => stdout.consume(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.consume(chunk));
@@ -169,14 +178,14 @@ export class CliSupervisor {
     child.stdin.end(stdinPayload, () => stdinPayload.fill(0));
 
     try {
-      await waitForMountAvailability(child, settings.mountPath, this.mountTimeoutMs);
+      await waitForMountAvailability(child, params.mountPath, this.mountTimeoutMs);
       return { diagnostics: { stdout: stdout.summary(), stderr: stderr.summary() } };
     } catch (error) {
       if (child.exitCode === null) {
         this.stopRequested = true;
         child.kill('SIGINT');
         await this.exitPromise.catch(() => undefined);
-        await waitForMountInaccessibility(settings.mountPath, this.mountTimeoutMs);
+        await waitForMountInaccessibility(params.mountPath, this.mountTimeoutMs);
       }
       this.child = null;
       this.exitPromise = null;

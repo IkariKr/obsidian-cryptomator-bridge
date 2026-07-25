@@ -1,20 +1,124 @@
 import { spawn } from 'node:child_process';
-import { access, lstat } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { PrerequisiteError } from './errors';
-import { RedactedDiagnostics, safeDiagnosticMessage } from './diagnostics';
-import { validatePaths } from './pathValidation';
-import type { BridgeSettings, ResolvedBridgeSettings } from './types';
+import path from 'node:path';
+import { platform } from 'node:os';
+import { RedactedDiagnostics } from './diagnostics';
 
-const SUPPORTED_CLI_VERSION = '0.6.2';
 const PROBE_TIMEOUT_MS = 10_000;
 
-/** 前置检查结果。 / Result of prerequisite checks. */
-export interface PrerequisiteResult {
-  cliVersion: string;
-  mounters: string[];
-  warnings: string[];
-  normalizedSettings: Pick<ResolvedBridgeSettings, 'cliPath' | 'syncRootPath' | 'encryptedVaultRelativePath' | 'encryptedVaultPath' | 'mountPath'>;
+/** CLI 可执行文件名（Win）。 / CLI executable name (Win). */
+const CLI_EXE_NAME = 'cryptomator-cli.exe' as const;
+
+/** Program Files 下的固定候选路径。 / Fixed candidate paths under Program Files. */
+const PROGRAM_FILES_CANDIDATES = [
+  'C:\\Program Files\\Cryptomator\\cryptomator-cli.exe',
+  'C:\\Program Files\\Cryptomator\\CryptomatorCLI.exe',
+  'C:\\Program Files (x86)\\Cryptomator\\cryptomator-cli.exe',
+  'C:\\Program Files (x86)\\Cryptomator\\CryptomatorCLI.exe',
+];
+
+/** %LOCALAPPDATA% 下的候选基目录（不含版本号子目录）。 / Candidate base dirs under %LOCALAPPDATA% (without version subfolders). */
+function localAppDataBaseDirs(localAppData: string): string[] {
+  if (!localAppData) return [];
+  return [
+    path.join(localAppData, 'Programs', 'Cryptomator CLI'),
+    path.join(localAppData, 'Programs', 'CryptomatorCLI'),
+  ];
+}
+
+/**
+ * 尝试 access 单个候选路径；成功返回该路径，失败返回 null。
+ * Attempt to access a single candidate; returns the path on success, null on failure.
+ */
+async function tryCandidate(candidate: string): Promise<string | null> {
+  try {
+    await access(candidate, fsConstants.X_OK);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 按 PATH 环境变量的每个目录查找 CLI；可注入 PATH 字符串便于测试。
+ * Search PATH entries for the CLI; PATH string can be injected for testing.
+ */
+export async function scanPathForCli(pathEnv: string): Promise<string | null> {
+  if (!pathEnv) return null;
+  const isWin = platform() === 'win32';
+  const separator = isWin ? ';' : ':';
+  const cliName = isWin ? CLI_EXE_NAME : 'cryptomator-cli';
+
+  for (const dir of pathEnv.split(separator)) {
+    const trimmed = dir.trim();
+    if (!trimmed) continue;
+    // 跳过带引号的路径（极少见，安全处理）。 / Skip quoted paths (rare; safe handling).
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      const result = await tryCandidate(path.join(trimmed.slice(1, -1), cliName));
+      if (result) return result;
+      continue;
+    }
+    const result = await tryCandidate(path.join(trimmed, cliName));
+    if (result) return result;
+  }
+
+  return null;
+}
+
+/**
+ * 扫描常见安装目录（Program Files + %LOCALAPPDATA% 通配）；可注入 LOCALAPPDATA 便于测试。
+ * Scan common installation directories (Program Files + %LOCALAPPDATA% wildcard);
+ * LOCALAPPDATA can be injected for testing.
+ */
+export async function scanCommonDirsForCli(localAppData: string): Promise<string | null> {
+  if (platform() !== 'win32') return null;
+
+  // 第 1 层：Program Files 固定路径
+  for (const candidate of PROGRAM_FILES_CANDIDATES) {
+    const result = await tryCandidate(candidate);
+    if (result) return result;
+  }
+
+  if (!localAppData) return null;
+
+  // 第 2 层：%LOCALAPPDATA%\Programs\Cryptomator* 版本化目录
+  for (const baseDir of localAppDataBaseDirs(localAppData)) {
+    // 先尝试 baseDir 下直接存在 CLI
+    const direct = await tryCandidate(path.join(baseDir, CLI_EXE_NAME));
+    if (direct) return direct;
+
+    // 再扫描版本子目录（如 0.6.2）
+    let entries;
+    try {
+      entries = await readdir(baseDir, { withFileTypes: true });
+    } catch {
+      continue; // 基目录不存在，跳过
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(baseDir, entry.name, CLI_EXE_NAME);
+      const result = await tryCandidate(candidate);
+      if (result) return result;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 在 Windows 上自动检测 Cryptomator CLI 路径；分层：PATH → 常见目录。
+ * Auto-detect Cryptomator CLI path on Windows; layered: PATH → common directories.
+ */
+export async function detectWindowsCliPath(): Promise<string | null> {
+  return (await scanPathForCli(process.env.PATH ?? ''))
+      ?? (await scanCommonDirsForCli(process.env.LOCALAPPDATA ?? ''));
+}
+
+/** 前置条件检查错误。 / Prerequisite check error. */
+export interface PrerequisiteError {
+  field: string;
+  message: string;
 }
 
 /** CLI 探针结果；只保存有界且已脱敏的文本。 / CLI probe result with bounded, redacted text only. */
@@ -23,10 +127,6 @@ export interface ProbeResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
-}
-
-function parseMounters(stdout: string): string[] {
-  return stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
 }
 
 function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
@@ -40,12 +140,12 @@ function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
     });
     const timer = setTimeout(() => {
       child.kill('SIGINT');
-      reject(new PrerequisiteError('依赖检查超时，请确认 Cryptomator CLI 可正常启动。'));
+      reject(new Error('依赖检查超时，请确认 Cryptomator CLI 可正常启动。'));
     }, PROBE_TIMEOUT_MS);
 
-    child.once('error', (error) => {
+    child.once('error', () => {
       clearTimeout(timer);
-      reject(new PrerequisiteError('Cryptomator CLI 无法启动。'));
+      reject(new Error('Cryptomator CLI 无法启动。'));
     });
     child.stdout.on('data', (chunk: Buffer) => stdout.consume(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.consume(chunk));
@@ -57,80 +157,82 @@ function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
 }
 
 /**
- * 从 CLI 实际返回的列表中选择唯一的 WinFsp mounter；无法唯一确定时返回 undefined。
- * Selects the unique WinFsp mounter from the CLI's actual list; returns undefined when ambiguous.
+ * 发现所有可用的挂载器 ID 列表。
+ * Discover all available mounter IDs.
  */
-export async function discoverWinFspMounterId(
-  cliPath: string,
-  probe: (cliPath: string, args: string[]) => Promise<ProbeResult> = runProbe,
-): Promise<string | undefined> {
-  const normalizedCliPath = cliPath.trim();
-  if (!normalizedCliPath) {
-    return undefined;
+export async function discoverMounters(cliPath: string): Promise<string[]> {
+  const normalized = cliPath.trim();
+  if (!normalized) {
+    return [];
   }
-
   try {
-    const result = await probe(normalizedCliPath, ['list-mounters']);
+    const result = await runProbe(normalized, ['list-mounters']);
     if (result.code !== 0 || result.signal !== null) {
-      return undefined;
+      return [];
     }
-    const matches = parseMounters(result.stdout).filter((mounter) => /WinFspMountProvider$/iu.test(mounter));
-    if (matches.length === 1) {
-      return matches[0];
-    }
-    return matches.find((mounter) => mounter === 'WinFspMountProvider');
+    return result.stdout
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
   } catch {
-    return undefined;
+    return [];
   }
 }
 
 /**
- * 检查 CLI 版本和实际 mounter；不接受代码中猜测的 mounter 名称。
- * Check the CLI version and actual mounters; guessed mounter names are not accepted.
+ * 验证指定密文 Vault 的 CLI 和 mounter 前置条件。
+ * Validate CLI and mounter prerequisites for a given encrypted vault.
  */
 export async function checkPrerequisites(
-  settings: BridgeSettings,
-  currentObsidianVaultPath?: string,
-  probe: (cliPath: string, args: string[]) => Promise<ProbeResult> = runProbe,
-): Promise<PrerequisiteResult> {
-  const paths = await validatePaths({ settings, currentObsidianVaultPath });
-  const versionProbe = await probe(paths.cliPath, ['--version']);
-  if (versionProbe.code !== 0 || versionProbe.signal !== null) {
-    throw new PrerequisiteError('Cryptomator CLI 版本检查失败。');
-  }
-  const cliVersion = versionProbe.stdout.trim();
-  if (cliVersion !== SUPPORTED_CLI_VERSION) {
-    throw new PrerequisiteError(`仅支持 Cryptomator CLI ${SUPPORTED_CLI_VERSION}。`);
+  cliPath: string,
+  mounterId: string,
+  encryptedVaultPath: string,
+): Promise<PrerequisiteError[]> {
+  const errors: PrerequisiteError[] = [];
+  const normalizedCli = cliPath.trim();
+
+  // 检查 CLI 可执行
+  try {
+    await access(normalizedCli, fsConstants.X_OK);
+  } catch {
+    errors.push({ field: 'cliPath', message: `CLI 不可执行或不存在：${normalizedCli}` });
+    return errors;
   }
 
-  const mounterProbe = await probe(paths.cliPath, ['list-mounters']);
-  if (mounterProbe.code !== 0 || mounterProbe.signal !== null) {
-    throw new PrerequisiteError('Cryptomator CLI mounter 检查失败。');
-  }
-  const mounters = parseMounters(mounterProbe.stdout);
-  if (!mounters.includes(settings.mounterId)) {
-    throw new PrerequisiteError('配置的 mounter 不在当前 CLI 实际提供的列表中。');
+  // 检查挂载器列表
+  try {
+    const result = await runProbe(normalizedCli, ['list-mounters']);
+    if (result.code !== 0 || result.signal !== null) {
+      errors.push({ field: 'mounterId', message: '无法获取挂载器列表。' });
+    } else {
+      const mounters = result.stdout.split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);
+      if (!mounters.includes(mounterId)) {
+        errors.push({
+          field: 'mounterId',
+          message: `配置的挂载器 "${mounterId}" 不在可用列表中：${mounters.join(', ')}`,
+        });
+      }
+    }
+  } catch {
+    errors.push({ field: 'cliPath', message: '无法启动 CLI 以检查挂载器。' });
   }
 
-  const markers = ['masterkey.cryptomator', 'vault.cryptomator', 'd'];
-  for (const marker of markers) {
-    try {
-      await access(`${paths.encryptedVaultPath}\\${marker}`, fsConstants.F_OK);
-    } catch {
-      throw new PrerequisiteError('密文 Vault 缺少 Cryptomator 所需结构。');
+  // 检查密文 Vault 结构
+  if (normalizedCli && encryptedVaultPath) {
+    const markers = ['masterkey.cryptomator', 'vault.cryptomator', 'd'];
+    for (const marker of markers) {
+      try {
+        const markerPath = `${encryptedVaultPath}/${marker}`;
+        await access(markerPath, fsConstants.F_OK);
+      } catch {
+        errors.push({
+          field: 'encryptedVaultPath',
+          message: `密文 Vault 缺少 Cryptomator 所需结构，请确认目录是用 Cryptomator Desktop 创建的。`,
+        });
+        break;
+      }
     }
   }
 
-  return {
-    cliVersion,
-    mounters,
-    warnings: paths.warnings,
-    normalizedSettings: {
-      cliPath: paths.cliPath,
-      syncRootPath: paths.syncRootPath,
-      encryptedVaultRelativePath: paths.encryptedVaultRelativePath,
-      encryptedVaultPath: paths.encryptedVaultPath,
-      mountPath: paths.mountPath,
-    },
-  };
+  return errors;
 }

@@ -18,23 +18,43 @@ export interface AutoLockSettings {
 }
 
 /**
- * 唯一私密 Vault 的非敏感配置；不包含密码。
- * Non-sensitive configuration for the one private vault; does not contain a password.
+ * 单个加密文件夹记录；folderName 不包含 .cryptomator / .cryptomator-mount 后缀。
+ * A single encrypted folder record; folderName does not include the .cryptomator / .cryptomator-mount suffix.
+ */
+export interface VaultRecord {
+  id: string;
+  folderName: string;
+  nutstoreExclusionConfirmed: boolean;
+}
+
+/**
+ * 插件持久化设置；多文件夹级 Vault 记录列表。
+ * Plugin persisted settings; multi-folder vault record list.
  */
 export interface BridgeSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
   cliPath: string;
   syncRootPath: string;
-  encryptedVaultRelativePath: string;
-  mountPath: string;
   mounterId: string;
-  privateVaultName: string;
+  vaultRecords: VaultRecord[];
   autoLock: AutoLockSettings;
 }
 
-/** 已解析的运行时配置；密文 Vault 绝对路径不作为持久化契约。 / Resolved runtime configuration; the encrypted Vault absolute path is not persisted. */
-export interface ResolvedBridgeSettings extends BridgeSettings {
+/**
+ * 已解析的单条 Vault 记录；密文路径和挂载路径由 folderName + syncRoot 派生，不持久化。
+ * Resolved single vault record; encrypted and mount paths are derived from folderName + syncRoot and not persisted.
+ */
+export interface ResolvedVaultRecord extends VaultRecord {
   encryptedVaultPath: string;
+  mountPath: string;
+}
+
+/**
+ * 已解析的完整运行时配置；每条记录包含派生绝对路径。
+ * Resolved full runtime configuration; every record includes derived absolute paths.
+ */
+export interface ResolvedBridgeSettings extends BridgeSettings {
+  resolvedRecords: ResolvedVaultRecord[];
 }
 
 /**

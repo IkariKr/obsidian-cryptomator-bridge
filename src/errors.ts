@@ -43,3 +43,18 @@ export class UnownedMountError extends BridgeError {
     super('检测到可访问的无主挂载，请由原持有者或用户手工恢复；插件不会重复挂载或擅自卸载。', 'unowned-mount');
   }
 }
+
+/** 前置条件检查失败，携带详细错误列表。 / Prerequisite checks failed, carrying detailed error list. */
+export interface PrerequisiteCheckError {
+  field: string;
+  message: string;
+}
+
+export class PrerequisiteFailedError extends BridgeError {
+  public readonly errors: PrerequisiteCheckError[];
+
+  constructor(message: string, errors: PrerequisiteCheckError[]) {
+    super(message, 'prerequisite-failed');
+    this.errors = errors;
+  }
+}

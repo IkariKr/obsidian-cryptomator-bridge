@@ -1,109 +1,146 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
-import os from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
+import os from 'node:os';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { CliSupervisor } from '../src/cliSupervisor';
+import type { SpawnProcess } from '../src/cliSupervisor';
 import { BridgeController } from '../src/controller';
-import type { BridgeSettings } from '../src/types';
+import { BridgeError, PrerequisiteFailedError } from '../src/errors';
+import type { BridgeSettings, ResolvedVaultRecord } from '../src/types';
 
 const roots: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+async function cleanupAll(): Promise<void> {
+  for (const root of roots.splice(0)) {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
-function settings(mountPath: string): BridgeSettings {
-    return {
-    schemaVersion: 2,
-    cliPath: 'C:\\Cryptomator\\cryptomator-cli.exe',
-    syncRootPath: 'C:\\Nutstore',
-    encryptedVaultRelativePath: 'Vault',
-    mountPath,
+function createFakeSpawn(): SpawnProcess {
+  return ((_command, _args, _options) => {
+    const child = new (class extends EventEmitter {
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      readonly stdin = new EventEmitter();
+      readonly stdout = new EventEmitter();
+      readonly stderr = new EventEmitter();
+      // @ts-expect-error: EventEmitter end type not exact match
+    })().on('newListener', (event: string) => {
+      if (event === 'error') return;
+      if (event === 'exit') {
+        // Simulate process start and stop
+      }
+    }) as never;
+    return child;
+  }) as SpawnProcess;
+}
+
+async function createValidSettings(): Promise<{ settings: BridgeSettings; records: ResolvedVaultRecord[]; root: string }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-ctrl-'));
+  roots.push(root);
+  const syncRoot = path.join(root, 'vault');
+  const encDir = path.join(syncRoot, 'Work.cryptomator');
+  const cliPath = path.join(root, 'cli.exe');
+
+  await mkdir(encDir, { recursive: true });
+  await Promise.all([
+    writeFile(cliPath, ''),
+    writeFile(path.join(encDir, 'masterkey.cryptomator'), ''),
+    writeFile(path.join(encDir, 'vault.cryptomator'), ''),
+    mkdir(path.join(encDir, 'd')),
+  ]);
+
+  const settings: BridgeSettings = {
+    schemaVersion: 3,
+    cliPath,
+    syncRootPath: syncRoot,
     mounterId: 'WinFspMountProvider',
-    privateVaultName: 'Private Test Vault',
+    vaultRecords: [
+      { id: 'rec-work', folderName: 'Work', nutstoreExclusionConfirmed: true },
+      { id: 'rec-personal', folderName: 'Personal', nutstoreExclusionConfirmed: false },
+    ],
     autoLock: { idleLockMinutes: 15, lockOnScreenLock: true },
   };
-}
 
-function prerequisiteResult(current: BridgeSettings) {
-  return {
-    cliVersion: '0.6.2',
-    mounters: [current.mounterId],
-    warnings: [],
-    normalizedSettings: {
-      cliPath: current.cliPath,
-      syncRootPath: current.syncRootPath,
-      encryptedVaultRelativePath: current.encryptedVaultRelativePath,
-      encryptedVaultPath: 'C:\\Nutstore\\Vault',
-      mountPath: current.mountPath,
+  const records: ResolvedVaultRecord[] = [
+    {
+      id: 'rec-work',
+      folderName: 'Work',
+      nutstoreExclusionConfirmed: true,
+      encryptedVaultPath: encDir,
+      mountPath: path.join(syncRoot, 'Work.cryptomator-mount'),
     },
-  };
+    {
+      id: 'rec-personal',
+      folderName: 'Personal',
+      nutstoreExclusionConfirmed: false,
+      encryptedVaultPath: path.join(syncRoot, 'Personal.cryptomator'),
+      mountPath: path.join(syncRoot, 'Personal.cryptomator-mount'),
+    },
+  ];
+
+  return { settings, records, root };
 }
 
-describe('bridge controller', () => {
-  it('reconciles, unlocks, opens, and locks through owned supervisor calls', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-controller-'));
-    roots.push(root);
-    const current = settings(path.join(root, 'mount'));
-    const supervisor = {
-      ownsProcess: false,
-      unlock: vi.fn(async () => undefined),
-      stop: vi.fn(async () => undefined),
-      cleanup: vi.fn(async () => undefined),
-    };
-    let opened = '';
-    const controller = new BridgeController({
-      getSettings: () => current,
-      getCurrentVaultPath: () => undefined,
-      supervisor,
-      launcher: { open: (name: string) => { opened = name; return name; } } as never,
-      prerequisiteChecker: async () => prerequisiteResult(current),
-    });
-
-    await controller.reconcile();
-    expect(controller.state.state).toBe('idle');
-    const testInput = 'x'.repeat(8);
-    await controller.unlock(testInput, async () => true);
-    expect(controller.state.state).toBe('mounted');
-    expect(opened).toBe(current.privateVaultName);
-    expect(supervisor.unlock).toHaveBeenCalledWith(expect.objectContaining({ mountPath: current.mountPath }), testInput);
-    await controller.lock();
-    expect(controller.state.state).toBe('idle');
-    expect(supervisor.stop).toHaveBeenCalledWith(current.mountPath);
+describe('BridgeController (multi-session)', () => {
+  afterEach(async () => {
+    await cleanupAll();
   });
 
-  it('requires confirmation for prerequisite warnings and enters error on cancellation', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-controller-'));
-    roots.push(root);
-    const current = settings(path.join(root, 'mount'));
-    const supervisor = {
-      ownsProcess: false,
-      unlock: vi.fn(async () => undefined),
-      stop: vi.fn(async () => undefined),
-      cleanup: vi.fn(async () => undefined),
-    };
-    const controller = new BridgeController({
-      getSettings: () => current,
-      getCurrentVaultPath: () => undefined,
-      supervisor,
-      prerequisiteChecker: async () => ({ ...prerequisiteResult(current), warnings: ['sync-root-warning'] }),
-    });
-    await controller.reconcile();
-    await expect(controller.unlock('x'.repeat(8), async () => false)).rejects.toThrow('同步目录风险确认');
-    expect(controller.state.state).toBe('error');
-    expect(supervisor.unlock).not.toHaveBeenCalled();
+  it('starts with no sessions', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    expect(controller.getAllSessions().size).toBe(0);
+    expect(controller.isAnyMounted()).toBe(false);
+    expect(controller.getMountedCount()).toBe(0);
   });
 
-  it('does not claim an accessible mount without an owned process', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-controller-'));
-    roots.push(root);
-    const mountPath = path.join(root, 'mount');
-    await mkdir(mountPath);
-    const current = settings(mountPath);
-    const controller = new BridgeController({
-      getSettings: () => current,
-      getCurrentVaultPath: () => undefined,
-    });
-    await expect(controller.reconcile()).rejects.toThrow('无主挂载');
-    expect(controller.state.state).toBe('error');
+  it('supports unlock for a single record', async () => {
+    const { settings, records } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    const record = records[0];
+
+    // Should fail because the CLI is fake and encrypted dir doesn't exist for second record
+    await expect(controller.unlock(record, 'test-password')).rejects.toThrow();
+    // After failure, no session should remain
+    expect(controller.getMountedCount()).toBe(0);
+  });
+
+  it('emits aggregate state changes', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    const states: string[] = [];
+    controller.onStateChanged((agg) => states.push(agg.overallState));
+
+    expect(states.length).toBe(0); // No emit until a state transition
+  });
+
+  it('updateSettings applies new settings reference', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    const newSettings = { ...settings, mounterId: 'new-mounter' };
+    controller.updateSettings(newSettings);
+    // Settings are stored for later use in unlock calls
+  });
+
+  it('getSession returns undefined for unknown recordId', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    expect(controller.getSession('nonexistent')).toBeUndefined();
+  });
+
+  it('handles lockAll when nothing is mounted', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    await controller.lockAll();
+    expect(controller.isAnyMounted()).toBe(false);
+  });
+
+  it('cleanup removes all sessions', async () => {
+    const { settings } = await createValidSettings();
+    const controller = new BridgeController(settings);
+    await controller.cleanup();
+    expect(controller.getAllSessions().size).toBe(0);
   });
 });

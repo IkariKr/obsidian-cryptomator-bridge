@@ -1,9 +1,9 @@
 {
   "id": "obsidian-cryptomator-bridge",
   "name": "Cryptomator Bridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "minAppVersion": "1.5.0",
-  "description": "Unlock, open, and automatically lock one Cryptomator-protected Obsidian vault through the user-installed CLI.",
+  "description": "在同一控制 Vault 内管理多个文件夹级 Cryptomator 私密笔记库；明文挂载直接出现在文件树中，无需独立窗口。支持 Nutstore 排除规则门禁与自动锁定。",
   "author": "Obsidian Cryptomator Bridge contributors",
   "authorUrl": "https://github.com/",
   "isDesktopOnly": true
