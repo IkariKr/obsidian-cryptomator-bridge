@@ -157,6 +157,20 @@ function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
 }
 
 /**
+ * 从 CLI 输出文本中解析挂载器 ID 列表。
+ * Cryptomator CLI 可能把列表打印到 stdout 或 stderr，并夹杂 [WARN]/[INFO] 等日志行；
+ * 因此调用方应传入合并后的文本，并过滤掉日志行。
+ * Parse mounter IDs from CLI output text. The CLI may print the list on stdout or stderr,
+ * possibly mixed with log lines like [WARN]/[INFO]; callers pass merged text and we drop log lines.
+ */
+export function parseMounterList(text: string): string[] {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/^\[[a-z]+\]/iu.test(line));
+}
+
+/**
  * 发现所有可用的挂载器 ID 列表。
  * Discover all available mounter IDs.
  */
@@ -170,10 +184,9 @@ export async function discoverMounters(cliPath: string): Promise<string[]> {
     if (result.code !== 0 || result.signal !== null) {
       return [];
     }
-    return result.stdout
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    // CLI 可能把挂载器列表打到 stderr，必须合并 stdout+stderr 后再解析。
+    // The CLI may print the mounter list to stderr; merge before parsing.
+    return parseMounterList(`${result.stdout}\n${result.stderr}`);
   } catch {
     return [];
   }
@@ -199,19 +212,16 @@ export async function checkPrerequisites(
     return errors;
   }
 
-  // 检查挂载器列表
+  // 检查挂载器列表（复用 discoverMounters，确保合并 stdout+stderr 解析）
   try {
-    const result = await runProbe(normalizedCli, ['list-mounters']);
-    if (result.code !== 0 || result.signal !== null) {
+    const mounters = await discoverMounters(normalizedCli);
+    if (mounters.length === 0) {
       errors.push({ field: 'mounterId', message: '无法获取挂载器列表。' });
-    } else {
-      const mounters = result.stdout.split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);
-      if (!mounters.includes(mounterId)) {
-        errors.push({
-          field: 'mounterId',
-          message: `配置的挂载器 "${mounterId}" 不在可用列表中：${mounters.join(', ')}`,
-        });
-      }
+    } else if (!mounters.includes(mounterId)) {
+      errors.push({
+        field: 'mounterId',
+        message: `配置的挂载器 "${mounterId}" 不在可用列表中：${mounters.join(', ')}`,
+      });
     }
   } catch {
     errors.push({ field: 'cliPath', message: '无法启动 CLI 以检查挂载器。' });

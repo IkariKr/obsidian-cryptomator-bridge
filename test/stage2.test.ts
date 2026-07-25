@@ -4,7 +4,7 @@ import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { validateVaultRecordPaths } from '../src/pathValidation';
-import { checkPrerequisites, discoverMounters, scanPathForCli, scanCommonDirsForCli } from '../src/prerequisites';
+import { checkPrerequisites, discoverMounters, scanPathForCli, scanCommonDirsForCli, parseMounterList } from '../src/prerequisites';
 import { CliSupervisor, createUnlockArgs, type SpawnProcess, type UnlockParams } from '../src/cliSupervisor';
 import { RedactedDiagnostics } from '../src/diagnostics';
 import type { ResolvedVaultRecord } from '../src/types';
@@ -240,6 +240,43 @@ describe('CLI detection — PATH scanning', () => {
     const pathEnv = `;;;${dirA};;;`;
     const result = await scanPathForCli(pathEnv);
     expect(result).toBe(expected);
+  });
+});
+
+describe('parseMounterList — stderr/log-line handling', () => {
+  it('parses mounters printed on stderr (real CLI behavior)', () => {
+    const stderr = '[WARN] keychain unavailable\norg.cryptomator.frontend.fuse.mount.WinFspMountProvider\norg.cryptomator.frontend.webdav.mount.WindowsMounter\n';
+    const result = parseMounterList(`\n${stderr}`);
+    expect(result).toEqual([
+      'org.cryptomator.frontend.fuse.mount.WinFspMountProvider',
+      'org.cryptomator.frontend.webdav.mount.WindowsMounter',
+    ]);
+  });
+
+  it('parses mounters printed on stdout', () => {
+    const stdout = 'org.cryptomator.frontend.fuse.mount.WinFspMountProvider\norg.cryptomator.frontend.webdav.mount.WindowsMounter\n';
+    const result = parseMounterList(stdout);
+    expect(result).toEqual([
+      'org.cryptomator.frontend.fuse.mount.WinFspMountProvider',
+      'org.cryptomator.frontend.webdav.mount.WindowsMounter',
+    ]);
+  });
+
+  it('returns empty array when CLI outputs nothing', () => {
+    expect(parseMounterList('')).toEqual([]);
+    expect(parseMounterList('   \n  \n')).toEqual([]);
+  });
+
+  it('filters out log lines (WARN/INFO/ERROR) but keeps mounter IDs', () => {
+    const text = '[WARN] foo\n[INFO] bar\norg.cryptomator.frontend.webdav.mount.FallbackMounter\n[ERROR] baz\n';
+    const result = parseMounterList(text);
+    expect(result).toEqual(['org.cryptomator.frontend.webdav.mount.FallbackMounter']);
+  });
+
+  it('matches the real CLI list-mounters output format', () => {
+    const combined = 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider\norg.cryptomator.frontend.fuse.mount.WinFspMountProvider\norg.cryptomator.frontend.webdav.mount.WindowsMounter\norg.cryptomator.frontend.webdav.mount.FallbackMounter\n';
+    expect(parseMounterList(combined)).toHaveLength(4);
+    expect(parseMounterList(combined)).toContain('org.cryptomator.frontend.fuse.mount.WinFspMountProvider');
   });
 });
 
