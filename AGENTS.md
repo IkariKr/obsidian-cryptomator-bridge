@@ -5,9 +5,9 @@
 - This repository is an Obsidian plugin integration layer, not an encryption product.
 - Target Windows desktop only until the project explicitly expands scope.
 - Depend on user-installed Cryptomator Desktop, Cryptomator CLI, and WinFsp. Do not bundle, download, install, modify, or reimplement any dependency.
-- Support one configured private vault in the first functional release. The bridge runs in a non-private control Vault and opens the mounted private Vault in a separate Obsidian window.
+- Support folder-scoped Cryptomator Vault records in the first functional release. The bridge and Nutstore plugin run in the control Vault; unlocking exposes each plaintext mount as a sibling directory in that same Vault.
 - Treat a selected folder's “encryption” as onboarding or migration into a separate Cryptomator Vault, never in-place encryption. Vault creation remains a Cryptomator Desktop responsibility; any source deletion requires explicit confirmation after copy verification.
-- With the Nutstore Obsidian WebDAV plugin, the encrypted Vault must be inside the current control Vault's synced scope; the mount path must be local and outside the control Vault. Never enable the Nutstore sync plugin in the mounted private Vault. Cryptomator encrypts writes continuously; locking only unmounts the plaintext view.
+- With the Nutstore Obsidian WebDAV plugin, the encrypted Vault must be inside the current control Vault's synced scope, while the plaintext sibling mount uses the reserved `.cryptomator-mount` suffix and is excluded by the fixed rule `**/*.cryptomator-mount`. Never rely on an unverified or undocumented sync exclusion; the rule must be configured before unlock on every device. Cryptomator encrypts writes continuously; locking only unmounts the plaintext view.
 
 ## TypeScript and Obsidian
 

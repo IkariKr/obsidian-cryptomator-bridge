@@ -1,5 +1,7 @@
 # Obsidian Cryptomator Bridge 实现 SOP
 
+> 2026-07-25 架构决策：目标实现改为控制 Vault 内的 `<name>.cryptomator` 与 `<name>.cryptomator-mount` 同级布局，并要求 Nutstore 排除 `**/*.cryptomator-mount`。完整决策见 [架构决策](architecture-decision-same-vault-mount.md)。本文中“控制 Vault 外部挂载、独立私密 Vault 窗口”的旧步骤在代码迁移完成前仅作为历史基线，不得继续作为新功能设计依据。
+
 > 状态：实施前执行手册。本文定义首个功能版本的执行顺序、交付物和阻断条件；它不是用户部署指南，也不代表已有功能。
 
 ## 1. 固定边界
