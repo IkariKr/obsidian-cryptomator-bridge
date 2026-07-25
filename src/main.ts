@@ -9,18 +9,18 @@
  * - Multi-folder vault record list; context menu matches records by folder.
  * - Nutstore exclusion gating: unlock blocked until Nutstore exclusion confirmed.
  */
-import { Notice, Plugin, PluginSettingTab, Setting, TFolder } from 'obsidian';
-import type { BridgeSettings, VaultRecord, ResolvedVaultRecord } from './types';
+import { join } from 'node:path';
+import { FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import type { BridgeSettings, VaultRecord } from './types';
 import {
   loadSettings,
   migrateSettings,
   applyCurrentVaultDefaults,
   applyAutoDetectedDefaults,
   resolveVaultRecords,
-  DEFAULT_SETTINGS,
 } from './settings';
-import { BridgeController, BridgeError } from './controller';
-import { validateVaultRecordPaths } from './pathValidation';
+import { BridgeController } from './controller';
+import { discoverMounters } from './prerequisites';
 import { migrateFolderContents, removeMigratedSource } from './migration';
 import { AutoLockManager } from './autoLock';
 import { createDesktopActivityMonitor } from './desktopActivityMonitor';
@@ -30,10 +30,10 @@ import {
   ConfirmModal,
   NutstoreExclusionModal,
 } from './modals';
-import { applyAutoDetectedDefaults } from './settings';
 
 export default class CryptomatorBridgePlugin extends Plugin {
-  settings!: BridgeSettings;
+  // 覆盖基类可选的 settings 声明为本插件的具体类型。 / Narrow the base optional settings declaration to this plugin's concrete type.
+  declare settings: BridgeSettings;
   controller!: BridgeController;
   private autoLockManager?: AutoLockManager;
   private statusBarEl!: HTMLElement;
@@ -45,7 +45,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
     const migrated = migrateSettings(raw);
     let settings = applyCurrentVaultDefaults(
       loadSettings(migrated),
-      this.app.vault.adapter?.getBasePath?.() ?? undefined,
+      this.getVaultBasePath(),
     );
 
     // 1b. 自动检测 CLI 路径和挂载器 ID（仅当为空时）
@@ -101,7 +101,16 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
   async onunload(): Promise<void> {
     await this.controller.cleanup();
-    this.autoLockManager?.destroy();
+    this.autoLockManager?.stop();
+  }
+
+  /**
+   * 通过受支持的 FileSystemAdapter 获取控制 Vault 的绝对路径；非桌面适配器返回 undefined。
+   * Get the control Vault absolute path via the supported FileSystemAdapter; returns undefined on non-desktop adapters.
+   */
+  private getVaultBasePath(): string | undefined {
+    const adapter = this.app.vault.adapter;
+    return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined;
   }
 
   // ──────────── 右键菜单 ────────────
@@ -110,7 +119,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
     const folderName = folder.name;
     const record = this.settings.vaultRecords.find((r) => r.folderName === folderName);
     const session = record ? this.controller.getSession(record.id) : undefined;
-    const isMounted = session?.stateMachine.getState().state === 'mounted';
+    const isMounted = session?.stateMachine.state.state === 'mounted';
 
     if (!record) {
       // 未配置：提供配置入口
@@ -203,14 +212,9 @@ export default class CryptomatorBridgePlugin extends Plugin {
     try {
       const result = await this.controller.unlock(resolvedRecord, password);
       if (result.success) {
-        new Notice(`${folderName} 已解锁`);
-
-        // 在文件浏览器中显示挂载目录
-        const mountDir = this.app.vault.getAbstractFileByPath(`${folderName}.cryptomator-mount`);
-        if (mountDir) {
-          // 触发文件浏览器刷新
-          this.app.workspace.trigger('file-menu');
-        }
+        // 明文挂载目录由 Obsidian 的文件系统监视自动发现，无需手动刷新文件树。
+        // The plaintext mount directory is auto-discovered by Obsidian's file watcher; no manual refresh needed.
+        new Notice(`${folderName} 已解锁，明文目录 ${folderName}.cryptomator-mount 将出现在文件树中。`);
       }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -305,7 +309,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
     // 检查是否已挂载
     const session = this.controller.getSession(record.id);
-    if (!session || session.stateMachine.getState().state !== 'mounted') {
+    if (!session || session.stateMachine.state.state !== 'mounted') {
       new Notice(`请先解锁「${folder.name}」的私密笔记库，迁移需要挂载目录。`);
       return;
     }
@@ -317,15 +321,19 @@ export default class CryptomatorBridgePlugin extends Plugin {
       return;
     }
 
-    const vaultPath = this.app.vault.adapter?.getBasePath?.();
+    const vaultPath = this.getVaultBasePath();
     if (!vaultPath) {
       new Notice('无法获取 Vault 路径。');
       return;
     }
 
+    // folder.path 为 Vault 相对路径，需解析为绝对路径供文件系统操作使用。
+    // folder.path is vault-relative; resolve it to an absolute path for filesystem operations.
+    const absoluteSourcePath = join(vaultPath, folderPath);
+
     try {
       const report = await migrateFolderContents(
-        folderPath,
+        absoluteSourcePath,
         resolvedRecord.mountPath,
       );
 
@@ -341,7 +349,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
         ).open();
 
         if (deleteConfirm) {
-          await removeMigratedSource(folderPath, vaultPath, resolvedRecord.mountPath);
+          await removeMigratedSource(absoluteSourcePath, vaultPath, resolvedRecord.mountPath);
           new Notice(`已删除源文件夹「${folder.name}」。`);
         }
       }
@@ -355,21 +363,19 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
   private setupAutoLock(): void {
     const monitor = createDesktopActivityMonitor();
-    this.autoLockManager = new AutoLockManager(
+    this.autoLockManager = new AutoLockManager({
       monitor,
-      {
-        idleMinutes: this.settings.autoLock.idleLockMinutes,
-        lockOnScreenLock: this.settings.autoLock.lockOnScreenLock,
+      isMounted: () => this.controller.isAnyMounted(),
+      lock: async () => {
+        await this.controller.lockAll();
+        new Notice('私密笔记库已自动锁定。');
       },
-      {
-        isMounted: () => this.controller.isAnyMounted(),
-        lock: async () => {
-          await this.controller.lockAll();
-          new Notice('私密笔记库已自动锁定。');
-        },
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(`自动锁定失败：${message}`);
       },
-    );
-    this.autoLockManager.start();
+    });
+    this.autoLockManager.start(this.settings.autoLock);
   }
 
   // ──────────── 状态栏 ────────────
@@ -393,9 +399,11 @@ export default class CryptomatorBridgePlugin extends Plugin {
     }
   }
 
-  private async saveSettings(): Promise<void> {
+  async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
     this.controller.updateSettings(this.settings);
+    // 同步自动锁定策略变更（空闲分钟/锁屏开关）。 / Propagate auto-lock policy changes (idle minutes / screen-lock toggle).
+    this.autoLockManager?.update(this.settings.autoLock);
   }
 }
 

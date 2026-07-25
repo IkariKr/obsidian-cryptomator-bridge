@@ -1,12 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
-import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { CliSupervisor } from '../src/cliSupervisor';
-import type { SpawnProcess } from '../src/cliSupervisor';
 import { BridgeController } from '../src/controller';
-import { BridgeError, PrerequisiteFailedError } from '../src/errors';
 import type { BridgeSettings, ResolvedVaultRecord } from '../src/types';
 
 const roots: string[] = [];
@@ -15,25 +11,6 @@ async function cleanupAll(): Promise<void> {
   for (const root of roots.splice(0)) {
     await rm(root, { recursive: true, force: true });
   }
-}
-
-function createFakeSpawn(): SpawnProcess {
-  return ((_command, _args, _options) => {
-    const child = new (class extends EventEmitter {
-      exitCode: number | null = null;
-      signalCode: NodeJS.Signals | null = null;
-      readonly stdin = new EventEmitter();
-      readonly stdout = new EventEmitter();
-      readonly stderr = new EventEmitter();
-      // @ts-expect-error: EventEmitter end type not exact match
-    })().on('newListener', (event: string) => {
-      if (event === 'error') return;
-      if (event === 'exit') {
-        // Simulate process start and stop
-      }
-    }) as never;
-    return child;
-  }) as SpawnProcess;
 }
 
 async function createValidSettings(): Promise<{ settings: BridgeSettings; records: ResolvedVaultRecord[]; root: string }> {

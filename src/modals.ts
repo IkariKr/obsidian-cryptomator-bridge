@@ -172,8 +172,8 @@ export class PasswordModal extends Modal {
       this.resolvePromise = undefined;
     }
     this.password = '';
-    const { contentEl } = this.contentEl;
-    contentEl?.empty();
+    const { contentEl } = this;
+    contentEl.empty();
   }
 }
 
