@@ -1,6 +1,6 @@
 # 产品方向：Cryptomator 私密笔记库操作编排
 
-> 重要架构决策：目标方案已改为“当前控制 Vault 内的明文挂载目录 + Nutstore 通用排除规则”。固定命名和安全约束见 [架构决策](architecture-decision-same-vault-mount.md)。本文的旧实现描述只代表当前代码尚未完成迁移的部分。
+> 重要架构决策：实现采用“当前控制 Vault 内的明文挂载目录 + Nutstore 通用排除规则”。固定命名和安全约束见 [架构决策](architecture-decision-same-vault-mount.md)。
 
 ## 目标
 

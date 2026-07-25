@@ -10,16 +10,16 @@
 | --- | --- |
 | `src/types.ts`：VaultRecord、ResolvedVaultRecord、BridgeSettings（v3，vaultRecords 列表） | ✅ |
 | `src/settings.ts`：v3 契约、v2→v3 迁移、派生命名、多记录校验 | ✅ |
-| `src/pathValidation.ts`：按记录校验（密文存在、挂载不存在、syncRoot 内） | ✅ |
+| `src/pathValidation.ts`：按记录校验（密文存在、挂载不存在、当前控制 Vault 边界、父目录和 Windows reparse point） | ✅ |
 | `src/cliSupervisor.ts`：UnlockParams 接口、onExit 回调 | ✅ |
-| `src/prerequisites.ts`：discoverMounters、checkPrerequisites（cli+mounter+vault） | ✅ |
+| `src/prerequisites.ts`：discoverMounters、CLI 版本门禁、checkPrerequisites（cli+mounter+vault） | ✅ |
 | `src/controller.ts`：多会话 Map<recordId, VaultSession>、聚合状态、lockAll | ✅ |
 | `src/main.ts`：多文件夹右键菜单、Nutstore 门禁、设置页记录列表、状态栏聚合 | ✅ |
 | `src/modals.ts`：VaultSetupModal、PasswordModal、ConfirmModal、NutstoreExclusionModal | ✅ |
 | `src/vaultLauncher.ts`：已删除（同 Vault 布局无需独立窗口） | ✅ |
 | `src/migration.ts`：目标路径改为 record 的 mountPath | ✅ |
 | `src/errors.ts`：新增 PrerequisiteFailedError | ✅ |
-| 测试：6 个文件、48 个测试全部通过 | ✅ |
+| 测试：6 个文件、66 个测试全部通过 | ✅ |
 | `npm run build`：成功生成 main.js | ✅ |
 | `manifest.json`：版本 1.0.0，描述已更新 | ✅ |
 | `docs/` 阶段证据文档：已更新 | ✅ |
@@ -29,10 +29,10 @@
 | 检查 | 结果 |
 | --- | --- |
 | `npm run build` | PASS |
-| `npm test` | PASS（48/48） |
-| `npm run check` (tsc --noEmit) | 预先存在的问题，旧代码中同样失败；esbuild 构建和测试均通过 |
+| `npm test` | PASS（66/66） |
+| `npm run check` (tsc --noEmit) | PASS |
 | 密码不在源码/测试夹具/日志/参数/环境变量 | PASS；`validateSettings` 拒绝 password/passphrase/secret 字段 |
-| `docs/凭据.txt` 不在 `.npmignore` 发布范围内 | 待重新确认 `npm pack --dry-run` |
+| `npm pack --dry-run` | PASS；发布内容仅包含 LICENSE、README.md、main.js、manifest.json、package.json，不包含 `docs/凭据.txt` |
 
 ## 手工验收清单（待完成）
 
@@ -47,7 +47,7 @@
 
 ### 多文件夹
 - [ ] 8. 配置第二个私密笔记库
-- [ ] 9. 同时解锁两个 Vault，文件树中两个明文目录可见
+- [ ] 9. 同时解锁两个私密记录，文件树中两个明文目录可见
 - [ ] 10. 分别锁定两个 Vault，互不干扰
 
 ### 错误处理
@@ -60,7 +60,7 @@
 - [ ] 15. Windows 锁屏后自动锁定所有已解锁 Vault
 
 ### 迁移
-- [ ] 16. 右键 → "迁移到私密笔记库" → 文件复制 + 校验 → 确认删除明文源
+- [ ] 16. 右键 → "迁移到私密笔记库" → 配置/解锁引导 → 文件复制 + 校验 → 确认删除明文源
 
 ### 配置管理
 - [ ] 17. 设置页移除记录，确认后记录消失

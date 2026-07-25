@@ -139,7 +139,16 @@ describe('settings contract (v3 multi-record)', () => {
   });
 
   it('rejects folderNames with path separators or reserved suffixes', () => {
-    const badNames = ['bad/name', 'bad\\name', 'bad\0name', 'bad.cryptomator', 'bad.cryptomator-mount'];
+    const badNames = [
+      'bad/name',
+      'bad\\name',
+      'bad\0name',
+      'bad.cryptomator',
+      'bad.cryptomator-mount',
+      'CON',
+      'name.',
+      'name*',
+    ];
     for (const name of badNames) {
       const result = validateSettings({
         ...validSettings,

@@ -1,8 +1,8 @@
 {
   "name": "obsidian-cryptomator-bridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Windows desktop Obsidian integration layer for one Cryptomator vault",
+  "description": "Windows desktop Obsidian integration layer for folder-scoped Cryptomator vaults",
   "type": "module",
   "files": [
     "main.js",

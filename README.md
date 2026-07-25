@@ -6,7 +6,7 @@
 
 `Obsidian Cryptomator Bridge` 是一个仅面向 Windows Desktop 的 Obsidian 插件。它不实现加密，也不替代 Nutstore Obsidian 插件的 WebDAV 同步；它把 Cryptomator 私密笔记库的创建引导、解锁、打开、锁定和自动锁定收敛为 Obsidian 内的少量操作。
 
-> 架构决策（2026-07-25）：目标方案改为在当前控制 Vault 内显示明文挂载目录，并通过 Nutstore 排除规则 `**/*.cryptomator-mount` 防止明文同步。详细约定见 [架构决策](docs/architecture-decision-same-vault-mount.md)。当前代码尚未切换到该方案。
+> 架构决策（2026-07-25）：插件在当前控制 Vault 内显示明文挂载目录，并通过 Nutstore 排除规则 `**/*.cryptomator-mount` 防止明文同步。详细约定见 [架构决策](docs/architecture-decision-same-vault-mount.md)。
 
 核心分工如下：
 
@@ -68,7 +68,7 @@ Cryptomator：持续加密写入并按密码挂载明文视图
 
 `Obsidian Cryptomator Bridge` is a Windows Desktop-only Obsidian plugin. It neither implements encryption nor replaces the Nutstore Obsidian plugin's WebDAV synchronization. It reduces the Cryptomator private-notes workflow to a small set of Obsidian actions: setup guidance, unlock, open, lock, and automatic locking.
 
-> Architecture decision (2026-07-25): the target design displays plaintext mount directories inside the current control Vault and excludes them from Nutstore with `**/*.cryptomator-mount`. See the [architecture decision](docs/architecture-decision-same-vault-mount.md). The current code has not switched to this design yet.
+> Architecture decision (2026-07-25): the plugin displays plaintext mount directories inside the current control Vault and excludes them from Nutstore with `**/*.cryptomator-mount`. See the [architecture decision](docs/architecture-decision-same-vault-mount.md).
 
 Responsibilities are deliberately separated:
 

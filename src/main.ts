@@ -18,6 +18,8 @@ import {
   applyCurrentVaultDefaults,
   applyAutoDetectedDefaults,
   resolveVaultRecords,
+  ENCRYPTED_VAULT_SUFFIX,
+  MOUNT_SUFFIX,
 } from './settings';
 import { BridgeController } from './controller';
 import { discoverMounters } from './prerequisites';
@@ -53,7 +55,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
     this.settings = settings;
 
     // 2. 创建控制器
-    this.controller = new BridgeController(this.settings);
+    this.controller = new BridgeController(this.settings, this.getVaultBasePath());
     this.controller.onStateChanged((aggregate) => {
       this.updateUiState(aggregate);
     });
@@ -117,6 +119,9 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
   private addFolderMenuItems(menu: import('obsidian').Menu, folder: TFolder): void {
     const folderName = folder.name;
+    if (folderName.endsWith(ENCRYPTED_VAULT_SUFFIX) || folderName.endsWith(MOUNT_SUFFIX)) {
+      return;
+    }
     const record = this.settings.vaultRecords.find((r) => r.folderName === folderName);
     const session = record ? this.controller.getSession(record.id) : undefined;
     const isMounted = session?.stateMachine.state.state === 'mounted';
@@ -127,7 +132,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
         item
           .setTitle('配置为私密笔记库')
           .setIcon('lock')
-          .onClick(() => this.configureVault(folderName));
+          .onClick(() => void this.configureAndUnlockVault(folderName));
       });
     } else if (isMounted) {
       // 已挂载：提供锁定入口
@@ -159,16 +164,31 @@ export default class CryptomatorBridgePlugin extends Plugin {
       item
         .setTitle('迁移到私密笔记库')
         .setIcon('folder-input')
-        .onClick(() => this.migrateFolderToVault(folder));
+        .onClick(() => void this.migrateFolderToVault(folder));
     });
   }
 
   // ──────────── 配置 / 解锁 / 锁定 / 迁移 ────────────
 
-  private async configureVault(folderName: string): Promise<void> {
+  private async configureAndUnlockVault(folderName: string): Promise<void> {
+    try {
+      const record = await this.configureVault(folderName);
+      if (!record) {
+        return;
+      }
+      // 配置完成后立即进入解锁，避免用户保存配置后不知道下一步操作。
+      // Continue to unlock immediately after setup so the next action is explicit to the user.
+      await this.unlockVault(record, folderName);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      new Notice(`配置失败：${err.message}`);
+    }
+  }
+
+  private async configureVault(folderName: string): Promise<VaultRecord | undefined> {
     const result = await new VaultSetupModal(this.app, folderName).open();
     if (!result) {
-      return;
+      return undefined;
     }
 
     // 添加新记录
@@ -179,8 +199,14 @@ export default class CryptomatorBridgePlugin extends Plugin {
     };
 
     this.settings.vaultRecords.push(newRecord);
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (error) {
+      this.settings.vaultRecords = this.settings.vaultRecords.filter((record) => record.id !== newRecord.id);
+      throw error;
+    }
     new Notice(`已配置私密笔记库：${folderName}`);
+    return newRecord;
   }
 
   private async unlockVault(record: VaultRecord, folderName: string): Promise<void> {
@@ -196,20 +222,20 @@ export default class CryptomatorBridgePlugin extends Plugin {
     }
 
     // 密码输入
-    const password = await new PasswordModal(this.app, folderName).open();
+    let password = await new PasswordModal(this.app, folderName).open();
     if (!password) {
       return;
     }
 
-    // 解析记录路径
-    const resolved = resolveVaultRecords(this.settings);
-    const resolvedRecord = resolved.find((r) => r.id === record.id);
-    if (!resolvedRecord) {
-      new Notice(`找不到记录配置：${folderName}`);
-      return;
-    }
-
     try {
+      // 解析记录路径
+      const resolved = resolveVaultRecords(this.settings);
+      const resolvedRecord = resolved.find((r) => r.id === record.id);
+      if (!resolvedRecord) {
+        new Notice(`找不到记录配置：${folderName}`);
+        return;
+      }
+
       const result = await this.controller.unlock(resolvedRecord, password);
       if (result.success) {
         // 明文挂载目录由 Obsidian 的文件系统监视自动发现，无需手动刷新文件树。
@@ -219,6 +245,8 @@ export default class CryptomatorBridgePlugin extends Plugin {
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       new Notice(`解锁失败：${err.message}`);
+    } finally {
+      password = '';
     }
   }
 
@@ -288,7 +316,49 @@ export default class CryptomatorBridgePlugin extends Plugin {
   }
 
   private async migrateFolderToVault(folder: TFolder): Promise<void> {
-    const folderPath = folder.path;
+    if (folder.isRoot()) {
+      new Notice('不能迁移当前控制 Vault 根目录；请选择一个具体文件夹。');
+      return;
+    }
+    if (folder.name.endsWith(ENCRYPTED_VAULT_SUFFIX) || folder.name.endsWith(MOUNT_SUFFIX)) {
+      new Notice('Cryptomator 密文目录或明文挂载目录不能作为迁移源。');
+      return;
+    }
+
+    // 迁移入口也负责引导首次配置，避免用户先看到一个无法执行的确认框。
+    // The migration entry also guides first-time setup, avoiding a confirmation dialog for an unavailable action.
+    let record = this.settings.vaultRecords.find((r) => r.folderName === folder.name);
+    if (!record) {
+      try {
+        record = await this.configureVault(folder.name);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        new Notice(`迁移准备失败：${err.message}`);
+        return;
+      }
+      if (!record) {
+        return;
+      }
+    }
+
+    // 未挂载时直接进入解锁流程；密码仍只在本次操作中通过 CLI stdin 使用。
+    // If it is not mounted, enter the unlock flow; the password remains one-use CLI stdin input.
+    let session = this.controller.getSession(record.id);
+    if (!session || session.stateMachine.state.state !== 'mounted') {
+      try {
+        await this.unlockVault(record, folder.name);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        new Notice(`迁移准备失败：${err.message}`);
+        return;
+      }
+      session = this.controller.getSession(record.id);
+      if (!session || session.stateMachine.state.state !== 'mounted') {
+        new Notice(`「${folder.name}」尚未解锁，迁移已取消。`);
+        return;
+      }
+    }
+
     const confirmed = await new ConfirmModal(
       this.app,
       '迁移到私密笔记库',
@@ -297,20 +367,6 @@ export default class CryptomatorBridgePlugin extends Plugin {
     ).open();
 
     if (!confirmed) {
-      return;
-    }
-
-    // 查找对应的 vaultRecord
-    const record = this.settings.vaultRecords.find((r) => r.folderName === folder.name);
-    if (!record) {
-      new Notice(`请先为「${folder.name}」配置私密笔记库。`);
-      return;
-    }
-
-    // 检查是否已挂载
-    const session = this.controller.getSession(record.id);
-    if (!session || session.stateMachine.state.state !== 'mounted') {
-      new Notice(`请先解锁「${folder.name}」的私密笔记库，迁移需要挂载目录。`);
       return;
     }
 
@@ -329,7 +385,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
     // folder.path 为 Vault 相对路径，需解析为绝对路径供文件系统操作使用。
     // folder.path is vault-relative; resolve it to an absolute path for filesystem operations.
-    const absoluteSourcePath = join(vaultPath, folderPath);
+    const absoluteSourcePath = join(vaultPath, folder.path);
 
     try {
       const report = await migrateFolderContents(
@@ -363,6 +419,12 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
   private setupAutoLock(): void {
     const monitor = createDesktopActivityMonitor();
+    if (
+      monitor.available === false &&
+      (this.settings.autoLock.idleLockMinutes > 0 || this.settings.autoLock.lockOnScreenLock)
+    ) {
+      new Notice('当前桌面环境无法提供空闲/锁屏事件，自动锁定暂不可用；手动锁定仍可使用。');
+    }
     this.autoLockManager = new AutoLockManager({
       monitor,
       isMounted: () => this.controller.isAnyMounted(),

@@ -81,9 +81,9 @@ Cryptomator 会在文件写入时持续更新密文；锁定只负责安全卸�
   → Nutstore 排除确认
 ```
 
-`privateVaultName` 不再表示业务上的加密文件夹名称；同 Vault 模式下不再需要通过 Obsidian URI 打开第二个 Vault。后续实现应改为在当前控制 Vault 中刷新或等待文件树发现挂载目录。
+`privateVaultName` 不再表示业务上的加密文件夹名称；同 Vault 模式下不再通过 Obsidian URI 打开第二个 Vault。插件等待 Obsidian 文件系统监视发现当前控制 Vault 中的挂载目录。
 
 ## 当前状态
 
-本决策只更新产品和架构方向。当前代码仍保留旧的“控制 Vault 外部挂载、独立私密 Vault 窗口”实现，后续代码变更必须先完成路径校验、Nutstore 排除验收、迁移记录模型和锁定流程的重新设计。
+当前代码已采用本决策的同 Vault 布局、按记录管理、Nutstore 排除门禁和安全锁定流程。仍待完成的是依赖真实 Cryptomator/WinFsp/Nutstore 环境的手工验收；手工验收通过前不得将文档中的 PASS 视为真实环境证明。
 

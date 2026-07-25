@@ -185,8 +185,16 @@ export class CliSupervisor {
         this.stopRequested = true;
         child.kill('SIGINT');
         await this.exitPromise.catch(() => undefined);
-        await waitForMountInaccessibility(params.mountPath, this.mountTimeoutMs);
       }
+      // 即使 CLI 已退出，也必须确认挂载点确实不可访问；否则保留句柄和所有权，
+      // 让后续的安全锁定继续有机会恢复，不能把挂载留成无主状态。
+      // Even after CLI exit, verify the mount is inaccessible; otherwise retain ownership
+      // so a later safe-lock retry can recover it instead of creating an orphan mount.
+      const inaccessible = await waitForMountInaccessibility(params.mountPath, this.mountTimeoutMs);
+      if (!inaccessible) {
+        throw new MountError('CLI 已退出，但挂载点仍可访问；插件保留恢复状态，不会伪造已锁定。');
+      }
+
       this.child = null;
       this.exitPromise = null;
       if (child.exitCode !== null || child.signalCode !== null) {

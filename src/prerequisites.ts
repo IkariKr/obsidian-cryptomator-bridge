@@ -7,6 +7,9 @@ import { RedactedDiagnostics } from './diagnostics';
 
 const PROBE_TIMEOUT_MS = 10_000;
 
+/** 首版只接受阶段 0 已验证的 CLI 版本。 / Version verified by phase 0 for the first release. */
+export const SUPPORTED_CLI_VERSION = '0.6.2' as const;
+
 /** CLI 可执行文件名（Win）。 / CLI executable name (Win). */
 const CLI_EXE_NAME = 'cryptomator-cli.exe' as const;
 
@@ -129,6 +132,17 @@ export interface ProbeResult {
   stderr: string;
 }
 
+/**
+ * 从 CLI 版本输出中提取 Cryptomator CLI 版本。
+ * Extract the Cryptomator CLI version from version-command output.
+ */
+export function parseCliVersion(text: string): string | null {
+  const lines = text.split(/\r?\n/u);
+  const preferred = lines.find((line) => /cryptomator\s*cli|cryptomator-cli/iu.test(line));
+  const match = (preferred ?? text).match(/\b(\d+\.\d+\.\d+)\b/u);
+  return match?.[1] ?? null;
+}
+
 function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
     const stdout = new RedactedDiagnostics([cliPath]);
@@ -210,6 +224,23 @@ export async function checkPrerequisites(
   } catch {
     errors.push({ field: 'cliPath', message: `CLI 不可执行或不存在：${normalizedCli}` });
     return errors;
+  }
+
+  // 运行时重新确认版本，避免仅凭路径或目录名误认未验证的 CLI。
+  // Recheck the version at runtime instead of trusting the executable path or folder name.
+  try {
+    const versionResult = await runProbe(normalizedCli, ['--version']);
+    const detectedVersion = parseCliVersion(`${versionResult.stdout}\n${versionResult.stderr}`);
+    if (versionResult.code !== 0 || versionResult.signal !== null || !detectedVersion) {
+      errors.push({ field: 'cliVersion', message: '无法确认 Cryptomator CLI 版本。' });
+    } else if (detectedVersion !== SUPPORTED_CLI_VERSION) {
+      errors.push({
+        field: 'cliVersion',
+        message: `当前 Cryptomator CLI 版本为 ${detectedVersion}，首版仅支持 ${SUPPORTED_CLI_VERSION}。`,
+      });
+    }
+  } catch {
+    errors.push({ field: 'cliVersion', message: 'Cryptomator CLI 版本检查失败。' });
   }
 
   // 检查挂载器列表（复用 discoverMounters，确保合并 stdout+stderr 解析）

@@ -4,7 +4,14 @@ import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { validateVaultRecordPaths } from '../src/pathValidation';
-import { checkPrerequisites, discoverMounters, scanPathForCli, scanCommonDirsForCli, parseMounterList } from '../src/prerequisites';
+import {
+  checkPrerequisites,
+  discoverMounters,
+  scanPathForCli,
+  scanCommonDirsForCli,
+  parseMounterList,
+  parseCliVersion,
+} from '../src/prerequisites';
 import { CliSupervisor, createUnlockArgs, type SpawnProcess, type UnlockParams } from '../src/cliSupervisor';
 import { RedactedDiagnostics } from '../src/diagnostics';
 import type { ResolvedVaultRecord } from '../src/types';
@@ -69,6 +76,24 @@ describe('stage 2 path and CLI boundaries (v3 multi-record)', () => {
     await mkdir(resolvedRecord.mountPath);
     const errors = validateVaultRecordPaths(resolvedRecord);
     expect(errors.some((e) => e.field.includes('mountPath') && e.message.includes('已存在'))).toBe(true);
+  });
+
+  it('rejects a mount path whose parent does not exist', async () => {
+    const { resolvedRecord } = await fixture();
+    const bad = { ...resolvedRecord, mountPath: path.join(path.dirname(resolvedRecord.mountPath), 'missing', 'mount') };
+    const errors = validateVaultRecordPaths(bad);
+    expect(errors.some((e) => e.field.includes('mountPath') && e.message.includes('父目录'))).toBe(true);
+  });
+
+  it('keeps both paths inside the current control Vault when that boundary is supplied', async () => {
+    const { root, syncRoot, resolvedRecord } = await fixture();
+    expect(validateVaultRecordPaths(resolvedRecord, syncRoot)).toHaveLength(0);
+    const outside = {
+      ...resolvedRecord,
+      encryptedVaultPath: path.join(path.dirname(root), 'outside.cryptomator'),
+    };
+    const errors = validateVaultRecordPaths(outside, syncRoot);
+    expect(errors.some((e) => e.message.includes('当前控制 Vault'))).toBe(true);
   });
 
   it('rejects a junction or reparse point as ciphertext directory', async () => {
@@ -150,6 +175,47 @@ describe('stage 2 path and CLI boundaries (v3 multi-record)', () => {
     await expect(access(mountPath)).rejects.toBeDefined();
   });
 
+  it('retains ownership when a failed unlock leaves the mount accessible', async () => {
+    const { resolvedRecord, cliPath } = await fixture();
+    class FakeStream extends EventEmitter {
+      end(_payload: Buffer): void {
+        void mkdir(resolvedRecord.mountPath).then(() => {
+          child.exitCode = 1;
+          child.emit('exit', 1, null);
+        });
+      }
+    }
+    class FakeChild extends EventEmitter {
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      readonly stdin = new FakeStream();
+      readonly stdout = new EventEmitter();
+      readonly stderr = new EventEmitter();
+      kill(signal: NodeJS.Signals): boolean {
+        this.signalCode = signal;
+        queueMicrotask(() => this.emit('exit', null, signal));
+        return true;
+      }
+    }
+    const child = new FakeChild();
+    const supervisor = new CliSupervisor({
+      mountTimeoutMs: 20,
+      spawnProcess: (() => child as never) as SpawnProcess,
+    });
+    const params: UnlockParams = {
+      cliPath,
+      encryptedVaultPath: resolvedRecord.encryptedVaultPath,
+      mountPath: resolvedRecord.mountPath,
+      mounterId: 'WinFspMountProvider',
+    };
+
+    await expect(supervisor.unlock(params, 'test-password')).rejects.toThrow('仍可访问');
+    expect(supervisor.ownsProcess).toBe(true);
+    await rm(resolvedRecord.mountPath, { recursive: true, force: true });
+    await expect(supervisor.stop(resolvedRecord.mountPath)).resolves.toBeDefined();
+    expect(supervisor.ownsProcess).toBe(false);
+  });
+
   it('redacts secrets and bounds diagnostics', () => {
     const testInput = 'x'.repeat(8);
     const diagnostics = new RedactedDiagnostics(['C:\\Vault'], [testInput]);
@@ -168,6 +234,12 @@ describe('stage 2 path and CLI boundaries (v3 multi-record)', () => {
     const mounters = await discoverMounters(cliPath);
     // cliPath is an empty file, not a real CLI - expect empty list
     expect(Array.isArray(mounters)).toBe(true);
+  });
+
+  it('parses the Cryptomator CLI version from stdout or stderr', () => {
+    expect(parseCliVersion('Cryptomator CLI 0.6.2\n')).toBe('0.6.2');
+    expect(parseCliVersion('[INFO] version\nCryptomator CLI: 0.7.0')).toBe('0.7.0');
+    expect(parseCliVersion('no version here')).toBeNull();
   });
 
   it('returns empty list when CLI path is empty', async () => {

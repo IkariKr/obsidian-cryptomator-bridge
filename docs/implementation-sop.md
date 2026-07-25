@@ -1,12 +1,12 @@
 # Obsidian Cryptomator Bridge 实现 SOP
 
-> 2026-07-25 架构决策：目标实现改为控制 Vault 内的 `<name>.cryptomator` 与 `<name>.cryptomator-mount` 同级布局，并要求 Nutstore 排除 `**/*.cryptomator-mount`。完整决策见 [架构决策](architecture-decision-same-vault-mount.md)。本文中“控制 Vault 外部挂载、独立私密 Vault 窗口”的旧步骤在代码迁移完成前仅作为历史基线，不得继续作为新功能设计依据。
+> 2026-07-25 架构决策：实现采用控制 Vault 内的 `<name>.cryptomator` 与 `<name>.cryptomator-mount` 同级布局，并要求 Nutstore 排除 `**/*.cryptomator-mount`。完整决策见 [架构决策](architecture-decision-same-vault-mount.md)。
 
 > 状态：实施前执行手册。本文定义首个功能版本的执行顺序、交付物和阻断条件；它不是用户部署指南，也不代表已有功能。
 
 ## 1. 固定边界
 
-本 SOP 只适用于一个 Windows Desktop 私密 Vault 与一个非私密控制 Vault。Bridge 插件运行在控制 Vault 中，私密 Vault 解锁后在独立窗口打开；Cryptomator Desktop、Cryptomator CLI 与 WinFsp 必须由用户独立安装，项目不分发、不安装、也不修改它们。
+本 SOP 只适用于 Windows Desktop。Bridge 与 Nutstore 插件运行在唯一的控制 Vault 中；解锁后的明文挂载目录作为该 Vault 的同级目录出现。Cryptomator Desktop、Cryptomator CLI 与 WinFsp 必须由用户独立安装，项目不分发、不安装、也不修改它们。
 
 以下规则在所有阶段都不可突破：
 
@@ -14,7 +14,7 @@
 - 密码只能在一次解锁操作中短暂存在，并只经 Cryptomator CLI 的 `stdin` 传递。
 - 密码不得进入设置、日志、命令行参数、环境变量、剪贴板、快照、崩溃报告或测试夹具。
 - 不使用 `shell: true`、字符串拼接的 shell 命令、`taskkill`，也不创建明文临时文件。
-- Nutstore Obsidian 插件只能同步控制 Vault 内的 Cryptomator 密文目录；不得在私密明文挂载 Vault 中启用该同步插件，也不得让 WebDAV 同步挂载目录。
+- Nutstore Obsidian 插件只能同步控制 Vault 内的 Cryptomator 密文目录；不得让 WebDAV 同步明文挂载目录。
 - 普通文件夹的“加密”仅指迁移到一个独立 Cryptomator Vault：先复制并校验，删除源文件夹必须由用户明确确认，绝不原地转换或默认删除。
 - Cryptomator 在写入发生时持续更新密文；锁定只卸载明文挂载点。空闲与锁屏自动锁定必须复用手动锁定路径，不能缓存密码或宣称重新加密。
 - 只有当前运行实例创建并持有的 CLI 进程才可由插件停止；检测到未拥有的挂载时不得重复挂载或擅自卸载。
@@ -40,7 +40,7 @@
 ### 前置条件
 
 - Windows 10 或 Windows 11、Obsidian Desktop、Cryptomator Desktop、Cryptomator CLI `0.6.2`、WinFsp 与已配置 Nutstore Obsidian WebDAV 插件的控制 Vault。首版只接受经验证的 CLI `0.6.2`，不对其他版本作兼容承诺；插件不探测或控制 Nutstore WebDAV 服务。
-- 一个非私密控制 Vault，以及位于该控制 Vault 同步范围内的可删除 Cryptomator 测试 Vault；私密明文挂载点必须位于控制 Vault 外。
+- 一个非私密控制 Vault，以及位于该控制 Vault 同步范围内的可删除 Cryptomator 测试 Vault；私密明文挂载点必须位于控制 Vault 内并配置排除规则。
 - 一个与个人资料隔离、可删除的 Cryptomator 测试 Vault。
 - 一个本地挂载目标；它不能位于 OneDrive、Dropbox、Google Drive 或其他同步根目录中。对于已验证的 `WinFspMountProvider`，该目标必须是已存在父目录下**尚不存在**的路径节点，不能预先创建为空目录。
 - 一个已经在 Obsidian 中注册的测试 Vault 名称。
@@ -51,8 +51,8 @@
 2. 以测试程序或受控手工操作调用 `unlock --password:stdin --mounter=<mounterId> --mountPoint=<mountPath> <encryptedVaultPath>`。密码必须以一次受控 stdin 写入（包含明确的行结束符）传递，然后立即关闭 stdin；不能通过 PowerShell 历史、`echo`、环境变量或参数传递。
 3. 在限定超时内确认挂载目录可读写，并确认插件或 CLI 没有把明文复制到挂载点以外的显式文件、缓存目录或临时目录。挂载目录本身提供的明文内容是预期行为，不能据此宣称操作系统内存或分页文件中不存在明文。
 4. 验证 Node/Electron 子进程可向该 CLI 进程发送优雅停止请求，并确认 CLI 退出后挂载目录不可访问。记录实际使用的停止机制、CLI 返回行为以及 `onunload`、插件 reload、Obsidian 正常退出时的清理结果。
-5. 以 URL-encoded 的已注册 Vault 名称测试 `obsidian://open?vault=<privateVaultName>`，确认私密 Vault 在独立窗口中打开，桥接插件的控制窗口和 CLI 进程所有权仍然可用。当前 Obsidian CLI 不承担跨 Vault 打开职责。
-6. 验证 Obsidian URI 的具体启动 API。优先使用受支持的 Obsidian API 或浏览器标准能力，并通过 `VaultLauncher` 适配器隔离；若只能依赖未公开的 Electron 内部 API，则本阶段阻断，不直接进入实现。
+5. 解锁后确认 `<name>.cryptomator-mount` 在当前控制 Vault 文件树中出现，且 Bridge 控制窗口和 CLI 进程所有权仍然可用；不创建或打开第二个 Obsidian Vault。
+6. 验证 Obsidian 文件系统监视能发现当前控制 Vault 内的明文挂载目录；不引入第二个 Vault 启动器或未公开的 Electron API。
 7. 模拟插件 reload、Obsidian 退出重启和 CLI 意外退出。启动时发现挂载目录可访问但没有当前实例持有的进程句柄，必须进入 `error` 并提示人工恢复，不能重复挂载、猜测 PID 所有权或强制卸载。
 8. 验证编辑挂载目录后，密文 Vault 中的文件变化可被同步客户端观察到；锁定后确认挂载目录不可访问且同步客户端只看到密文。不得把同步客户端“退出后目录不可用”当作加密或卸载成功的证明。
 9. 验证 Windows 锁屏与系统空闲事件的桌面端接入方式；事件发生时只能请求同一安全卸载流程，并记录文件句柄阻止卸载时的可恢复行为。
@@ -61,7 +61,7 @@
 
 - 在 Issue 或后续 `docs/phase-0-evidence.md` 中保存脱敏后的版本、mounter 标识、命令结构、停止方式和结论。
 - CLI 可以挂载、访问并优雅卸载测试 Vault。
-- Obsidian URI 能在独立窗口打开已注册 Vault，且桥接控制实例仍能发起锁定。
+- 明文挂载目录能在当前控制 Vault 中被发现，且桥接控制实例仍能发起锁定。
 - 重载、重启和意外退出场景不会留下无主挂载而被插件误认作自己的挂载。
 - 已验证的 Vault 启动方式已记录在证据中，业务代码不直接依赖具体桌面 API。
 - 测试中未记录、提交或复制任何密码、真实个人路径或测试 Vault 密文。
@@ -81,7 +81,7 @@
 ### 步骤
 
 1. 创建标准 Obsidian 插件工程，插件 ID 固定为 `obsidian-cryptomator-bridge`，并标记为 desktop-only。
-2. 定义唯一 Vault 的设置模型：`schemaVersion`、`cliPath`、`syncRootPath`、`encryptedVaultRelativePath`、`mountPath`、`mounterId`、`privateVaultName` 与自动锁定策略。`syncRootPath` 默认取当前控制 Vault 的 `app.vault.adapter.getBasePath()`；密文 Vault 的绝对路径由同步根与相对路径解析。CLI 与挂载路径属于每台电脑的本机配置，不能假设跨设备一致。`schemaVersion` 用于未来设置迁移；这些路径仍应在 UI 和诊断中按需脱敏。
+2. 定义 v3 多记录设置模型：`schemaVersion`、`cliPath`、`syncRootPath`、`mounterId`、`vaultRecords` 与自动锁定策略。每条记录由文件夹名派生密文和挂载路径；`syncRootPath` 默认取当前控制 Vault 的 `FileSystemAdapter.getBasePath()`。CLI 路径和控制 Vault 根目录属于每台电脑的本机配置，不能假设跨设备一致；这些路径仍应在 UI 和诊断中按需脱敏。
 3. 明确密码不属于设置模型、序列化状态、命令参数对象或日志事件。
 4. 建立状态机：`reconciling → idle → checking → mounting → mounted → unmounting → idle`，所有状态均可进入 `error`，`error` 只能回到 `reconciling`。每个状态只能由受控事件转换；UI 不得直接修改状态。
 5. 将设置、首次迁移、依赖检查、CLI 进程监督、Vault URI 启动、自动锁定和 UI 状态拆为独立模块。进程句柄只存在于运行时，不能仅凭持久化 PID 认领进程。
@@ -105,7 +105,7 @@
 
 ### 步骤
 
-1. 在 `checking` 状态验证 CLI 可执行文件、密文 Vault 目录、挂载目标及其父目录、mounter 标识和 `privateVaultName`；运行时重新确认 CLI 版本为支持的 `0.6.2`，并重新校验 mounter 仍由 `list-mounters` 提供。
+1. 在 `checking` 状态验证 CLI 可执行文件、已验证的 `0.6.2` CLI 版本、密文 Vault 目录、挂载目标及其父目录和 mounter 标识；运行时重新校验 mounter 仍由 `list-mounters` 提供。
 2. 将路径规范化为绝对路径后拒绝以下情况：密文同步范围不在当前控制 Vault 内、两个路径相同或互相包含、挂载目标位于当前控制 Vault 内、路径是盘符/文件系统根、路径或其父目录经过 junction/reparse point、父目录不可写。对于已验证的 `WinFspMountProvider`，挂载目标必须不存在且父目录已存在；不得预先创建空目录。插件不探测 Nutstore WebDAV 服务，只校验本地路径边界。
 3. 用 Password Modal 收集密码；只把密码交给 CLI 进程的 `stdin`，写入后立即关闭输入流并清除可清除的引用。JavaScript 字符串无法保证物理清零，因此不得声称已安全擦除内存。
 4. 使用 `child_process.spawn` 或等价 Electron/Node API 启动 CLI：参数必须是数组、`shell` 必须为 `false`、窗口必须隐藏，且不得把密码放入 `args` 或 `env`。stdin 写入必须包含明确的行结束符，并在一次写入后结束流。
@@ -131,8 +131,8 @@
 
 ### 步骤
 
-1. 仅在 `mounted` 状态通过阶段 0 已验证的 `VaultLauncher` 适配器打开 `obsidian://open?vault=<encodeURIComponent(privateVaultName)>`。业务代码不得直接调用 `shell.openExternal` 或其他未公开 Electron API。
-2. 不尝试将挂载目录插入当前 Vault 的文件树、符号链接或索引。
+1. 仅在 `mounted` 状态等待 Obsidian 文件系统监视发现同 Vault 内的 `<name>.cryptomator-mount`；业务代码不调用 `shell.openExternal` 或其他未公开 Electron API。
+2. 不创建第二个 Obsidian Vault，不使用符号链接插入文件树，也不修改 Obsidian 索引。
 3. 用户点击“锁定”后，提示其先关闭私密 Vault 中的文件；插件随后执行阶段 0 已验证的优雅停止流程。`onunload`、Obsidian 正常退出、插件 reload、系统空闲和 Windows 锁屏也必须走同一监督器清理路径；锁屏与空闲不得弹出阻断式确认框。
 4. 只有 CLI 退出且挂载目录不可访问时，才返回 `idle`。若文件句柄阻止卸载、CLI 异常退出或超时，保留 `error` 并展示恢复指引。
 
@@ -172,7 +172,7 @@
 
 ### 发布门槛
 
-- README、设置文案和发布说明不宣称移动端、多 Vault、自动解锁、密码记忆、内置 Cryptomator 或“锁定时重新加密”。
+- README、设置文案和发布说明不宣称移动端、独立私密 Vault 窗口、密码记忆、内置 Cryptomator 或“锁定时重新加密”。用户主动点击配置后的密码输入不属于无交互自动解锁。
 - `.gitignore` 排除运行时设置、日志、构建文件和环境变量；仓库中没有真实密码、个人路径、Vault 数据或脱敏前诊断。
 - 构建、受影响测试和手工验收全部通过后，才创建发布候选。
 
@@ -181,4 +181,4 @@
 - 每个阶段完成后更新其证据与已知限制；不要提前标记后续阶段完成。
 - Cryptomator CLI、WinFsp、Obsidian 或 Windows 的版本变化导致行为变化时，先重新执行阶段 0。
 - 只要启动 API、窗口行为、CLI 参数或卸载信号发生变化，就必须重新执行阶段 0；不要以旧证据覆盖新版本。
-- 若范围扩展到多 Vault、移动端、CLI 打包或密码持久化，必须新建安全设计并更新 README、AGENTS.md 与本 SOP 后才能实现。
+- 若范围扩展到多个 Obsidian Vault、移动端、CLI 打包或密码持久化，必须新建安全设计并更新 README、AGENTS.md 与本 SOP 后才能实现。
