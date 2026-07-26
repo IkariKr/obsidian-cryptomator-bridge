@@ -6,7 +6,7 @@
 
 `Obsidian Cryptomator Bridge` 是一个仅面向 Windows Desktop 的 Obsidian 插件。它不实现加密，也不替代 Nutstore Obsidian 插件的 WebDAV 同步；它把 Cryptomator 私密笔记库的创建引导、解锁、打开、锁定和自动锁定收敛为 Obsidian 内的少量操作。
 
-> 架构决策（2026-07-25）：目标方案改为在当前控制 Vault 内显示明文挂载目录，并通过 Nutstore 排除规则 `**/*.cryptomator-mount` 防止明文同步。详细约定见 [架构决策](docs/architecture-decision-same-vault-mount.md)。当前代码尚未切换到该方案。
+> 架构决策（2026-07-25）：插件在当前控制 Vault 内显示明文挂载目录，并通过 Nutstore 排除规则 `**/*.cryptomator-mount` 防止明文同步。详细约定见 [架构决策](docs/architecture-decision-same-vault-mount.md)。
 
 核心分工如下：
 
@@ -20,7 +20,7 @@ Cryptomator：持续加密写入并按密码挂载明文视图
 
 - 支持在当前控制 Vault 中管理按文件夹划分的 Cryptomator Vault；解锁后明文挂载目录直接出现在当前 Vault 内。
 - 在控制 Vault 的文件夹右键菜单提供“配置私密笔记库 / 迁移 / 解锁 / 锁定”入口。
-- 首次使用时引导用户通过已安装的 Cryptomator Desktop 在当前控制 Vault 的 Nutstore 同步范围内创建密文 Vault，随后登记 CLI、挂载和 Vault 信息。
+- 首次使用时在当前控制 Vault 的 Nutstore 同步范围内创建受版本锁定的 Cryptomator Format 8 密文 Vault：先确认排除规则和新密码，再显示一次恢复密钥，确认保存后才原子发布并登记。
 - 将选中的普通文件夹迁移到私密 Vault：先复制并校验，只有用户明确确认后才可删除原明文文件夹。
 - 通过用户已安装的 Cryptomator CLI 和 WinFsp 解锁、挂载及锁定 Vault；密码仅通过 CLI 标准输入使用一次。
 - 提供手动锁定、空闲超时锁定和 Windows 锁屏锁定；自动锁定与手动锁定使用相同的安全卸载流程。
@@ -51,7 +51,9 @@ Cryptomator：持续加密写入并按密码挂载明文视图
 ### 前置条件与安全边界
 
 - 用户必须自行安装 Cryptomator Desktop、Cryptomator CLI、WinFsp，并配置 Nutstore Obsidian 插件的 WebDAV 同步；本插件不会分发、安装或修改这些依赖。
-- Cryptomator Desktop 负责创建新 Vault；插件不得自行实现 Vault 格式或声称对普通文件夹进行原地加密。
+- 插件仅为 `cryptomator-cli 0.6.2` 初始化标准密码型 Vault Format 8；格式或依赖版本变化时会停止创建并要求重新验收。它绝不原地加密普通文件夹，也不会自动删除原文件。
+- 创建恢复密钥只显示一次且不持久化；词表只从用户已安装的 Cryptomator Desktop 运行时读取，插件不打包该资源。
+- 同级目录挂载固定使用 `org.cryptomator.frontend.fuse.mount.WinFspMountProvider`；NetworkMountProvider 仅接受盘符，不能用于此布局。
 - 密码不写入设置、日志、命令行参数、环境变量、剪贴板、崩溃报告或测试夹具，也不缓存或自动解锁。
 - 自动锁定只能尝试安全卸载；若文件句柄阻止卸载，插件必须提示用户恢复处理，不能伪造“已锁定”。
 - 解锁期间，明文可能被 Obsidian、操作系统缓存或其他已授权程序访问。插件只能控制 Cryptomator 挂载点，不能保证清除所有操作系统级副本。
@@ -68,7 +70,7 @@ Cryptomator：持续加密写入并按密码挂载明文视图
 
 `Obsidian Cryptomator Bridge` is a Windows Desktop-only Obsidian plugin. It neither implements encryption nor replaces the Nutstore Obsidian plugin's WebDAV synchronization. It reduces the Cryptomator private-notes workflow to a small set of Obsidian actions: setup guidance, unlock, open, lock, and automatic locking.
 
-> Architecture decision (2026-07-25): the target design displays plaintext mount directories inside the current control Vault and excludes them from Nutstore with `**/*.cryptomator-mount`. See the [architecture decision](docs/architecture-decision-same-vault-mount.md). The current code has not switched to this design yet.
+> Architecture decision (2026-07-25): the plugin displays plaintext mount directories inside the current control Vault and excludes them from Nutstore with `**/*.cryptomator-mount`. See the [architecture decision](docs/architecture-decision-same-vault-mount.md).
 
 Responsibilities are deliberately separated:
 
@@ -82,7 +84,7 @@ This plugin: orchestrate setup guidance, unlock, opening, and safe locking in Ob
 
 - Folder-scoped Cryptomator Vaults managed inside one control Vault; unlocking exposes the plaintext mount directory in that same Vault.
 - Folder-menu actions in the control Vault for configuring, migrating, unlocking, and locking a private notes Vault.
-- First-use guidance through the user-installed Cryptomator Desktop to create the encrypted Vault inside the current control Vault's Nutstore-synced scope, then register CLI, mount, and Vault details.
+- First-use creation of a version-locked Cryptomator Format 8 vault inside the current control Vault's Nutstore-synced scope: confirm the exclusion rule and password, acknowledge the one-time recovery key, then atomically publish and register it.
 - Safe folder migration: copy and verify selected ordinary-folder contents before offering an explicitly confirmed source deletion.
 - Unlock, mount, and lock through the user-installed Cryptomator CLI and WinFsp, with a one-time password supplied only through CLI standard input.
 - Manual locking plus automatic locking after system idle time or Windows lock screen, using the same safe unmount path.
@@ -101,7 +103,9 @@ The fixed naming convention is `<folder>.cryptomator` for ciphertext and `<folde
 ### Security Boundary
 
 - Users install Cryptomator Desktop, Cryptomator CLI, WinFsp, and configure the Nutstore Obsidian WebDAV plugin themselves; this plugin never distributes, installs, or modifies them.
-- Cryptomator Desktop creates new Vaults. The plugin must not implement the Vault format or claim to encrypt an ordinary folder in place.
+- The plugin initializes a standard password vault only for `cryptomator-cli 0.6.2` and Vault Format 8. Any format or dependency change stops creation pending re-validation; ordinary folders are never encrypted in place or deleted automatically.
+- The recovery key is displayed once and never persisted. Its word list is read at runtime from the user's installed Cryptomator Desktop and is never bundled.
+- Sibling-directory mounts require `org.cryptomator.frontend.fuse.mount.WinFspMountProvider`; NetworkMountProvider accepts drive letters only.
 - Cryptomator encrypts changes as they are written. Locking only unmounts the local plaintext view; it does not start a second encryption pass.
 - Passwords are never persisted, logged, passed by command line or environment variables, cached, or used for automatic unlock.
 - An automatic lock may only attempt a safe unmount. If open handles prevent it, the plugin must show a recoverable error rather than claim the Vault is locked.

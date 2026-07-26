@@ -7,6 +7,29 @@ import { RedactedDiagnostics } from './diagnostics';
 
 const PROBE_TIMEOUT_MS = 10_000;
 
+/** 首版只接受阶段 0 已验证的 CLI 版本。 / Version verified by phase 0 for the first release. */
+export const SUPPORTED_CLI_VERSION = '0.6.2' as const;
+
+/** 同级目录挂载唯一支持的 WinFsp 挂载器。 / The only WinFsp mounter supported for sibling-directory mounts. */
+export const FOLDER_MOUNT_MOUNTER_ID = 'org.cryptomator.frontend.fuse.mount.WinFspMountProvider' as const;
+
+/** 旧版本错误自动选择的盘符挂载器；不能用于同级目录布局。 / Legacy drive-letter mounter incorrectly auto-selected by earlier versions; incompatible with sibling-directory layout. */
+export const LEGACY_NETWORK_MOUNTER_ID = 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider' as const;
+
+/**
+ * 仅将旧的错误默认值迁移为已发现的目录挂载器；不覆盖用户的其他显式选择。
+ * Migrate only the legacy incorrect default to a discovered folder mounter; never overwrite other explicit choices.
+ */
+export function migrateLegacyMounterId(currentMounterId: string, discoveredMounters: readonly string[]): string {
+  if (
+    (!currentMounterId || currentMounterId === LEGACY_NETWORK_MOUNTER_ID)
+    && discoveredMounters.includes(FOLDER_MOUNT_MOUNTER_ID)
+  ) {
+    return FOLDER_MOUNT_MOUNTER_ID;
+  }
+  return currentMounterId;
+}
+
 /** CLI 可执行文件名（Win）。 / CLI executable name (Win). */
 const CLI_EXE_NAME = 'cryptomator-cli.exe' as const;
 
@@ -129,6 +152,17 @@ export interface ProbeResult {
   stderr: string;
 }
 
+/**
+ * 从 CLI 版本输出中提取 Cryptomator CLI 版本。
+ * Extract the Cryptomator CLI version from version-command output.
+ */
+export function parseCliVersion(text: string): string | null {
+  const lines = text.split(/\r?\n/u);
+  const preferred = lines.find((line) => /cryptomator\s*cli|cryptomator-cli/iu.test(line));
+  const match = (preferred ?? text).match(/\b(\d+\.\d+\.\d+)\b/u);
+  return match?.[1] ?? null;
+}
+
 function runProbe(cliPath: string, args: string[]): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
     const stdout = new RedactedDiagnostics([cliPath]);
@@ -212,6 +246,23 @@ export async function checkPrerequisites(
     return errors;
   }
 
+  // 运行时重新确认版本，避免仅凭路径或目录名误认未验证的 CLI。
+  // Recheck the version at runtime instead of trusting the executable path or folder name.
+  try {
+    const versionResult = await runProbe(normalizedCli, ['--version']);
+    const detectedVersion = parseCliVersion(`${versionResult.stdout}\n${versionResult.stderr}`);
+    if (versionResult.code !== 0 || versionResult.signal !== null || !detectedVersion) {
+      errors.push({ field: 'cliVersion', message: '无法确认 Cryptomator CLI 版本。' });
+    } else if (detectedVersion !== SUPPORTED_CLI_VERSION) {
+      errors.push({
+        field: 'cliVersion',
+        message: `当前 Cryptomator CLI 版本为 ${detectedVersion}，首版仅支持 ${SUPPORTED_CLI_VERSION}。`,
+      });
+    }
+  } catch {
+    errors.push({ field: 'cliVersion', message: 'Cryptomator CLI 版本检查失败。' });
+  }
+
   // 检查挂载器列表（复用 discoverMounters，确保合并 stdout+stderr 解析）
   try {
     const mounters = await discoverMounters(normalizedCli);
@@ -221,6 +272,11 @@ export async function checkPrerequisites(
       errors.push({
         field: 'mounterId',
         message: `配置的挂载器 "${mounterId}" 不在可用列表中：${mounters.join(', ')}`,
+      });
+    } else if (mounterId !== FOLDER_MOUNT_MOUNTER_ID) {
+      errors.push({
+        field: 'mounterId',
+        message: `同级明文目录仅支持 ${FOLDER_MOUNT_MOUNTER_ID}；当前挂载器不能挂载到目录路径。`,
       });
     }
   } catch {
@@ -245,4 +301,15 @@ export async function checkPrerequisites(
   }
 
   return errors;
+}
+
+/**
+ * 验证创建前的 CLI 与挂载器条件；新 Vault 尚不存在，因此不检查密文目录结构。
+ * Validate CLI and mounter prerequisites before creation; a new vault does not yet have on-disk markers.
+ */
+export async function checkCreationPrerequisites(
+  cliPath: string,
+  mounterId: string,
+): Promise<PrerequisiteError[]> {
+  return checkPrerequisites(cliPath, mounterId, '');
 }

@@ -20,7 +20,7 @@
 - 自动锁定遍历所有已挂载会话：PASS；`lockAll` 遍历 `sessions.keys()`。
 - 文件夹迁移逐文件校验、非空目标拒绝、源变更不删除：PASS；`test/migration.test.ts` 覆盖（无变动）。
 - 自动锁定只在已挂载时触发并复用锁定入口：PASS；`test/autoLock.test.ts` 覆盖（无变动）。
-- CLI 进程意外退出时触发错误并清理会话：PASS；`setupProcessMonitor` 处理。
+- CLI 进程意外退出时进入可恢复错误，并保留必要的会话/挂载所有权：PASS；`CliSupervisor` 与控制器处理。
 
 ## 待手工验收
 

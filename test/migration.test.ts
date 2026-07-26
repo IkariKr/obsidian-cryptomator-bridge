@@ -2,15 +2,23 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { migrateFolderContents, removeMigratedSource } from '../src/migration';
+import { migrateFolderContents, removeMigratedSource, shouldUseWindowsNativeMountFallback } from '../src/migration';
 
 const roots: string[] = [];
+const mountedDestination = process.env.CRYPTOMATOR_MOUNT_INTEGRATION_PATH;
+const mountedIntegration = mountedDestination ? describe : describe.skip;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe('folder migration', () => {
+  it('classifies Node enumeration failures on Windows mounts for the native fallback', () => {
+    expect(shouldUseWindowsNativeMountFallback({ code: 'ENOENT' })).toBe(process.platform === 'win32');
+    expect(shouldUseWindowsNativeMountFallback({ cause: { code: 'UNKNOWN' } })).toBe(process.platform === 'win32');
+    expect(shouldUseWindowsNativeMountFallback({ code: 'EACCES' })).toBe(false);
+  });
+
   it('copies nested content, verifies it, and keeps the source by default', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-migration-'));
     roots.push(root);
@@ -36,6 +44,17 @@ describe('folder migration', () => {
     await mkdir(destination);
     await writeFile(path.join(destination, 'existing.md'), 'keep');
     await expect(migrateFolderContents(source, destination)).rejects.toThrow('不是空目录');
+  });
+
+  it('reports a recoverable mount-ready error when the destination disappears after validation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-migration-'));
+    roots.push(root);
+    const source = path.join(root, 'source');
+    const destination = path.join(root, 'mount');
+    await mkdir(source);
+    await mkdir(destination);
+    await rm(destination, { recursive: true });
+    await expect(migrateFolderContents(source, destination)).rejects.toThrow('私密挂载目录');
   });
 
   it('deletes only an explicitly selected non-root source under the control Vault', async () => {
@@ -68,4 +87,14 @@ describe('folder migration', () => {
     await expect(removeMigratedSource(source, control, destination)).rejects.toThrow('未删除源文件');
     await expect(readFile(path.join(source, 'note.md'), 'utf8')).resolves.toBe('changed');
   });
+});
+
+mountedIntegration('WinFsp 目录挂载兼容性', () => {
+  it('在 Node 无法枚举挂载点时使用 Windows 原生文件 API', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ocb-migration-mounted-'));
+    roots.push(root);
+    const source = path.join(root, 'empty-source');
+    await mkdir(source);
+    await expect(migrateFolderContents(source, mountedDestination!)).resolves.toEqual({ files: 0, directories: 0, bytes: 0 });
+  }, 30_000);
 });

@@ -14,7 +14,7 @@
 - `src/main.ts`：多文件夹级右键菜单（按文件夹定位记录）、Nutstore 排除门禁弹窗、配置向导、迁移入口、设置页（记录列表 + CLI/同步根/挂载器/自动锁定）、状态栏聚合显示。
 - `src/modals.ts`：`VaultSetupModal`（folderName 不可编辑、Nutstore 排除确认）、`PasswordModal`、`ConfirmModal`、`NutstoreExclusionModal`（门禁）。
 - `src/autoLock.ts`、`src/desktopActivityMonitor.ts`：空闲/锁屏自动锁定边界（无变动）。
-- `test/settings.test.ts`、`test/stateMachine.test.ts`、`test/autoLock.test.ts`、`test/controller.test.ts`、`test/stage2.test.ts`、`test/migration.test.ts`：6 个测试文件，48 个测试。
+- `test/settings.test.ts`、`test/stateMachine.test.ts`、`test/autoLock.test.ts`、`test/controller.test.ts`、`test/stage2.test.ts`、`test/migration.test.ts`：6 个测试文件，当前 66 个测试。
 
 ## 验证记录
 
@@ -22,7 +22,7 @@
 | --- | --- |
 | `npm ci` | PASS；依赖安装完成，npm audit 未发现漏洞 |
 | `npm run check` | PASS；TypeScript 无错误 |
-| `npm test` | PASS；6 个测试文件、48 个测试通过 |
+| `npm test` | PASS；6 个测试文件、66 个测试通过 |
 | `npm run build` | PASS；生成 `main.js`，构建产物已被 `.gitignore` 排除 |
 | 密码进入设置模型 | PASS（拒绝）；设置类型、默认值、运行时状态和测试夹具均不包含真实密码 |
 

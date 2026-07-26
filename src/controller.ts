@@ -78,7 +78,10 @@ export class BridgeController {
   private settings: BridgeSettings;
   private onStateChange?: (aggregate: AggregateState) => void;
 
-  constructor(settings: BridgeSettings) {
+  constructor(
+    settings: BridgeSettings,
+    private readonly currentControlVaultPath?: string,
+  ) {
     this.settings = settings;
   }
 
@@ -153,7 +156,7 @@ export class BridgeController {
    * - Unlocking an already-mounted record returns success immediately.
    * - Password is passed only once through CLI stdin.
    */
-  async unlock(record: ResolvedVaultRecord, password: string): Promise<UnlockResult> {
+  async unlock(record: ResolvedVaultRecord, passwordInput: string): Promise<UnlockResult> {
     const existing = this.sessions.get(record.id);
 
     // 已挂载 → 直接返回。 / Already mounted → return immediately.
@@ -176,7 +179,7 @@ export class BridgeController {
     }
 
     // 1. 验证路径。 / Validate paths.
-    const pathErrors = validateVaultRecordPaths(record);
+    const pathErrors = validateVaultRecordPaths(record, this.currentControlVaultPath);
     if (pathErrors.length > 0) {
       throw new BridgeError(
         `路径验证失败：${pathErrors.map((e) => e.message).join('；')}`,
@@ -228,7 +231,7 @@ export class BridgeController {
           mountPath: record.mountPath,
           mounterId: this.settings.mounterId,
         },
-        password,
+        passwordInput,
       );
 
       // 6. 状态机 → mounted。 / State machine → mounted.
@@ -240,9 +243,13 @@ export class BridgeController {
       // 失败时保留 error 会话供 UI 展示与恢复；supervisor.unlock 已释放自身进程引用。
       // On failure keep the error session for UI display and recovery; supervisor.unlock already released its process ref.
       const err = error instanceof Error ? error : new Error(String(error));
-      stateMachine.transition({ type: 'FAILED', message: err.message });
+      if (stateMachine.state.state !== 'error') {
+        stateMachine.transition({ type: 'FAILED', message: err.message });
+      }
       this.emit();
       throw err;
+    } finally {
+      passwordInput = '';
     }
   }
 
@@ -341,7 +348,7 @@ export class BridgeController {
         continue;
       }
 
-      const pathErrors = validateVaultRecordPaths(record);
+      const pathErrors = validateVaultRecordPaths(record, this.currentControlVaultPath);
       const mountExists = pathErrors.some(
         (e) => e.field.includes('mountPath') && e.message.includes('已存在'),
       );
@@ -393,7 +400,7 @@ export class BridgeController {
    */
   private async disposeSession(session: VaultSession): Promise<void> {
     if (session.supervisor.ownsProcess) {
-      await session.supervisor.stop(session.record.mountPath).catch(() => undefined);
+      await session.supervisor.stop(session.record.mountPath);
     }
   }
 }

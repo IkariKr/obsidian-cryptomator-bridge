@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { AutoLockSettings, BridgeSettings, VaultRecord } from './types';
-import { detectWindowsCliPath, discoverMounters } from './prerequisites';
+import { detectWindowsCliPath, discoverMounters, migrateLegacyMounterId } from './prerequisites';
 
 export const SETTINGS_SCHEMA_VERSION = 3 as const;
 
@@ -42,6 +42,14 @@ export function deriveEncryptedRelativePath(folderName: string): string {
 /** 根据 folderName 派生挂载相对路径。 / Derive mount relative path from folderName. */
 export function deriveMountRelativePath(folderName: string): string {
   return `${folderName}${MOUNT_SUFFIX}`;
+}
+
+/**
+ * 判断文件夹名称是否会与插件保留的 Cryptomator 目录冲突。
+ * Check whether a folder name conflicts with plugin-reserved Cryptomator directories.
+ */
+export function isReservedVaultFolderName(folderName: string): boolean {
+  return folderName.endsWith(ENCRYPTED_VAULT_SUFFIX) || folderName.endsWith(MOUNT_SUFFIX);
 }
 
 /** 设置校验结果。 / Result of settings validation. */
@@ -153,7 +161,11 @@ function validateVaultRecord(record: unknown, index: number, errors: string[]): 
     errors.push(`vaultRecords[${index}].folderName 不能为空。`);
   } else if (/[\\/\0]/u.test(folderName)) {
     errors.push(`vaultRecords[${index}].folderName 包含非法路径分隔符或空字符。`);
-  } else if (folderName.endsWith(ENCRYPTED_VAULT_SUFFIX) || folderName.endsWith(MOUNT_SUFFIX)) {
+  } else if (/[<>:"|?*\u0000-\u001F]/u.test(folderName) || /[. ]$/u.test(folderName)) {
+    errors.push(`vaultRecords[${index}].folderName 包含 Windows 不支持的字符或结尾。`);
+  } else if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/iu.test(folderName)) {
+    errors.push(`vaultRecords[${index}].folderName 不能使用 Windows 保留设备名。`);
+  } else if (isReservedVaultFolderName(folderName)) {
     errors.push(`vaultRecords[${index}].folderName 不得包含 ${ENCRYPTED_VAULT_SUFFIX} 或 ${MOUNT_SUFFIX} 后缀。`);
   }
   if (typeof r.nutstoreExclusionConfirmed !== 'boolean') {
@@ -290,10 +302,11 @@ export async function applyAutoDetectedDefaults(settings: BridgeSettings): Promi
   }
 
   // 自动检测挂载器 ID
-  if (!updated.mounterId && updated.cliPath) {
+  if (!updated.mounterId || updated.mounterId === 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider') {
     const mounters = await discoverMounters(updated.cliPath);
-    if (mounters.length > 0) {
-      updated = { ...updated, mounterId: mounters[0] };
+    const migratedMounterId = migrateLegacyMounterId(updated.mounterId, mounters);
+    if (migratedMounterId !== updated.mounterId) {
+      updated = { ...updated, mounterId: migratedMounterId };
     }
   }
 
