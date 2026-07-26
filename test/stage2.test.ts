@@ -10,6 +10,7 @@ import {
   scanPathForCli,
   scanCommonDirsForCli,
   parseMounterList,
+  migrateLegacyMounterId,
   parseCliVersion,
 } from '../src/prerequisites';
 import { CliSupervisor, createUnlockArgs, type SpawnProcess, type UnlockParams } from '../src/cliSupervisor';
@@ -349,6 +350,22 @@ describe('parseMounterList — stderr/log-line handling', () => {
     const combined = 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider\norg.cryptomator.frontend.fuse.mount.WinFspMountProvider\norg.cryptomator.frontend.webdav.mount.WindowsMounter\norg.cryptomator.frontend.webdav.mount.FallbackMounter\n';
     expect(parseMounterList(combined)).toHaveLength(4);
     expect(parseMounterList(combined)).toContain('org.cryptomator.frontend.fuse.mount.WinFspMountProvider');
+  });
+});
+
+describe('legacy mounter migration', () => {
+  it('migrates the old network default to the verified folder mounter', () => {
+    expect(migrateLegacyMounterId(
+      'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider',
+      ['org.cryptomator.frontend.fuse.mount.WinFspMountProvider'],
+    )).toBe('org.cryptomator.frontend.fuse.mount.WinFspMountProvider');
+  });
+
+  it('does not overwrite another explicit mounter choice', () => {
+    expect(migrateLegacyMounterId(
+      'org.cryptomator.frontend.webdav.mount.WindowsMounter',
+      ['org.cryptomator.frontend.fuse.mount.WinFspMountProvider'],
+    )).toBe('org.cryptomator.frontend.webdav.mount.WindowsMounter');
   });
 });
 

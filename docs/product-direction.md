@@ -19,7 +19,7 @@
   ├── Work.cryptomator-mount：解锁后的明文挂载点，Nutstore 排除
   └── Bridge：菜单、状态、自动锁定、无密码配置
           │
-          ├── Cryptomator Desktop：仅用于创建新的密文 Vault
+          ├── Cryptomator Desktop：提供恢复词表与发布前兼容性验收
           └── Cryptomator CLI + WinFsp：解锁、挂载、停止挂载
 ```
 
@@ -27,12 +27,11 @@
 
 ## 首次建立私密笔记库
 
-1. 用户在控制 Vault 中选中需要迁移的文件夹，选择“配置私密笔记库”。配置向导收集非敏感本机信息，并提示用户先用 Cryptomator Desktop 创建 Vault。
-2. 插件检查 Cryptomator Desktop、CLI、WinFsp 和当前控制 Vault 内的密文路径是否可用；不控制或探测 Nutstore WebDAV 服务本身。
-3. 插件引导用户用 Cryptomator Desktop 在当前控制 Vault 的 Nutstore 同步范围内创建密文 Vault，并设置密码。密码不回传或保存给插件。
-4. 插件以 CLI 解锁新 Vault，将源文件夹内容复制到挂载目录，并校验复制结果。
-5. 插件要求用户明确确认后，才可删除原明文文件夹；默认保留原文件夹。
-6. 插件将密文 Vault 挂载为同级的 `<原文件夹名>.cryptomator-mount`，让当前控制 Vault 发现并显示明文文件。
+1. 用户在控制 Vault 中选中需要迁移的文件夹，选择“配置私密笔记库”，确认 Nutstore 排除规则。
+2. 插件检查 CLI 精确为 `0.6.2`、目录挂载器、控制 Vault 直接子目录和目标冲突；不控制或探测 Nutstore WebDAV 服务本身。
+3. 用户输入并确认新密码。插件在同级随机暂存目录初始化标准 Format 8 Vault，显示一次恢复密钥；确认保存后才原子发布。
+4. 插件登记 Vault，并用同一轮密码经 CLI stdin 解锁；密码、恢复密钥和原始主密钥都不保存。
+5. 插件询问是否迁移源文件夹内容，复制并校验后才可由用户明确确认删除原文件夹；默认保留。
 
 “创建私密笔记库”表示迁移到一个独立 Cryptomator Vault，不表示把原文件夹原地转换成密文目录。
 

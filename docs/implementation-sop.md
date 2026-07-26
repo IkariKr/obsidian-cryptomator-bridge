@@ -10,7 +10,7 @@
 
 以下规则在所有阶段都不可突破：
 
-- 不实现加密、密钥管理、密码记忆或自动解锁；Cryptomator Desktop 负责创建 Vault，CLI 负责解锁与停止挂载。
+- 不实现通用加密产品、密码记忆或自动解锁；仅允许为 CLI `0.6.2` 在格式 8 已验收条件下初始化最小密码型 Vault。CLI 仍负责解锁与停止挂载，格式或依赖改变即停止创建。
 - 密码只能在一次解锁操作中短暂存在，并只经 Cryptomator CLI 的 `stdin` 传递。
 - 密码不得进入设置、日志、命令行参数、环境变量、剪贴板、快照、崩溃报告或测试夹具。
 - 不使用 `shell: true`、字符串拼接的 shell 命令、`taskkill`，也不创建明文临时文件。
@@ -18,6 +18,7 @@
 - 普通文件夹的“加密”仅指迁移到一个独立 Cryptomator Vault：先复制并校验，删除源文件夹必须由用户明确确认，绝不原地转换或默认删除。
 - Cryptomator 在写入发生时持续更新密文；锁定只卸载明文挂载点。空闲与锁屏自动锁定必须复用手动锁定路径，不能缓存密码或宣称重新加密。
 - 只有当前运行实例创建并持有的 CLI 进程才可由插件停止；检测到未拥有的挂载时不得重复挂载或擅自卸载。
+- 创建必须使用同级随机暂存目录，恢复密钥确认前或创建失败时只清理本次暂存目录；设置登记失败时保留已发布密文 Vault。恢复密钥和原始主密钥只能存在于运行时，词表仅可从用户已安装的 Desktop 读取。
 
 ## 2. 阶段总览
 
@@ -47,7 +48,7 @@
 
 ### 步骤
 
-1. 记录 `cryptomator-cli --version`、`cryptomator-cli list-mounters` 和 WinFsp 版本。版本不是 `0.6.2` 时停止；选择 CLI 实际列出的 WinFsp mounter 标识，不在代码或文档中猜测类名。
+1. 记录 `cryptomator-cli --version`、`cryptomator-cli list-mounters` 和 WinFsp 版本。版本不是 `0.6.2` 时停止；同级目录布局必须选择实际列出的 `org.cryptomator.frontend.fuse.mount.WinFspMountProvider`，不能使用仅支持盘符的 NetworkMountProvider。
 2. 以测试程序或受控手工操作调用 `unlock --password:stdin --mounter=<mounterId> --mountPoint=<mountPath> <encryptedVaultPath>`。密码必须以一次受控 stdin 写入（包含明确的行结束符）传递，然后立即关闭 stdin；不能通过 PowerShell 历史、`echo`、环境变量或参数传递。
 3. 在限定超时内确认挂载目录可读写，并确认插件或 CLI 没有把明文复制到挂载点以外的显式文件、缓存目录或临时目录。挂载目录本身提供的明文内容是预期行为，不能据此宣称操作系统内存或分页文件中不存在明文。
 4. 验证 Node/Electron 子进程可向该 CLI 进程发送优雅停止请求，并确认 CLI 退出后挂载目录不可访问。记录实际使用的停止机制、CLI 返回行为以及 `onunload`、插件 reload、Obsidian 正常退出时的清理结果。
@@ -157,6 +158,7 @@
 - CLI 参数数组构造、`shell: false`、密码脱敏和 stdin 生命周期。
 - 状态机的合法与非法转换、超时、CLI 退出和错误映射。
 - 任何 Bug 修复先添加回归测试；测试不得调用真实 Cryptomator CLI。
+- Vault 初始化另有 opt-in 一次性 Windows 集成测试；除自动化测试外，发布前必须用 Cryptomator Desktop 打开同一临时 Vault，验证创建密码、读写与恢复密钥恢复，并保留脱敏验收记录。
 
 ### 手工验收
 

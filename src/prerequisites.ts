@@ -10,6 +10,26 @@ const PROBE_TIMEOUT_MS = 10_000;
 /** 首版只接受阶段 0 已验证的 CLI 版本。 / Version verified by phase 0 for the first release. */
 export const SUPPORTED_CLI_VERSION = '0.6.2' as const;
 
+/** 同级目录挂载唯一支持的 WinFsp 挂载器。 / The only WinFsp mounter supported for sibling-directory mounts. */
+export const FOLDER_MOUNT_MOUNTER_ID = 'org.cryptomator.frontend.fuse.mount.WinFspMountProvider' as const;
+
+/** 旧版本错误自动选择的盘符挂载器；不能用于同级目录布局。 / Legacy drive-letter mounter incorrectly auto-selected by earlier versions; incompatible with sibling-directory layout. */
+export const LEGACY_NETWORK_MOUNTER_ID = 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider' as const;
+
+/**
+ * 仅将旧的错误默认值迁移为已发现的目录挂载器；不覆盖用户的其他显式选择。
+ * Migrate only the legacy incorrect default to a discovered folder mounter; never overwrite other explicit choices.
+ */
+export function migrateLegacyMounterId(currentMounterId: string, discoveredMounters: readonly string[]): string {
+  if (
+    (!currentMounterId || currentMounterId === LEGACY_NETWORK_MOUNTER_ID)
+    && discoveredMounters.includes(FOLDER_MOUNT_MOUNTER_ID)
+  ) {
+    return FOLDER_MOUNT_MOUNTER_ID;
+  }
+  return currentMounterId;
+}
+
 /** CLI 可执行文件名（Win）。 / CLI executable name (Win). */
 const CLI_EXE_NAME = 'cryptomator-cli.exe' as const;
 
@@ -253,6 +273,11 @@ export async function checkPrerequisites(
         field: 'mounterId',
         message: `配置的挂载器 "${mounterId}" 不在可用列表中：${mounters.join(', ')}`,
       });
+    } else if (mounterId !== FOLDER_MOUNT_MOUNTER_ID) {
+      errors.push({
+        field: 'mounterId',
+        message: `同级明文目录仅支持 ${FOLDER_MOUNT_MOUNTER_ID}；当前挂载器不能挂载到目录路径。`,
+      });
     }
   } catch {
     errors.push({ field: 'cliPath', message: '无法启动 CLI 以检查挂载器。' });
@@ -276,4 +301,15 @@ export async function checkPrerequisites(
   }
 
   return errors;
+}
+
+/**
+ * 验证创建前的 CLI 与挂载器条件；新 Vault 尚不存在，因此不检查密文目录结构。
+ * Validate CLI and mounter prerequisites before creation; a new vault does not yet have on-disk markers.
+ */
+export async function checkCreationPrerequisites(
+  cliPath: string,
+  mounterId: string,
+): Promise<PrerequisiteError[]> {
+  return checkPrerequisites(cliPath, mounterId, '');
 }

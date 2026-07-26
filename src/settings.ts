@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { AutoLockSettings, BridgeSettings, VaultRecord } from './types';
-import { detectWindowsCliPath, discoverMounters } from './prerequisites';
+import { detectWindowsCliPath, discoverMounters, migrateLegacyMounterId } from './prerequisites';
 
 export const SETTINGS_SCHEMA_VERSION = 3 as const;
 
@@ -302,10 +302,11 @@ export async function applyAutoDetectedDefaults(settings: BridgeSettings): Promi
   }
 
   // 自动检测挂载器 ID
-  if (!updated.mounterId && updated.cliPath) {
+  if (!updated.mounterId || updated.mounterId === 'org.cryptomator.frontend.fuse.mount.WinFspNetworkMountProvider') {
     const mounters = await discoverMounters(updated.cliPath);
-    if (mounters.length > 0) {
-      updated = { ...updated, mounterId: mounters[0] };
+    const migratedMounterId = migrateLegacyMounterId(updated.mounterId, mounters);
+    if (migratedMounterId !== updated.mounterId) {
+      updated = { ...updated, mounterId: migratedMounterId };
     }
   }
 

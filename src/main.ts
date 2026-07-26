@@ -9,7 +9,8 @@
  * - Multi-folder vault record list; context menu matches records by folder.
  * - Nutstore exclusion gating: unlock blocked until Nutstore exclusion confirmed.
  */
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import type { BridgeSettings, VaultRecord } from './types';
 import {
@@ -22,13 +23,17 @@ import {
   MOUNT_SUFFIX,
 } from './settings';
 import { BridgeController } from './controller';
-import { discoverMounters } from './prerequisites';
+import { checkCreationPrerequisites, discoverMounters, FOLDER_MOUNT_MOUNTER_ID } from './prerequisites';
 import { migrateFolderContents, removeMigratedSource } from './migration';
 import { AutoLockManager } from './autoLock';
 import { createDesktopActivityMonitor } from './desktopActivityMonitor';
+import { createVault, validateNewVaultPassword } from './vaultCreator';
+import { loadDesktopRecoveryWords } from './recoveryKey';
 import {
   VaultSetupModal,
   PasswordModal,
+  NewVaultPasswordModal,
+  RecoveryKeyModal,
   ConfirmModal,
   NutstoreExclusionModal,
 } from './modals';
@@ -49,9 +54,15 @@ export default class CryptomatorBridgePlugin extends Plugin {
       loadSettings(migrated),
       this.getVaultBasePath(),
     );
+    const settingsBeforeAutoDetection = JSON.stringify(settings);
 
     // 1b. 自动检测 CLI 路径和挂载器 ID（仅当为空时）
     settings = await applyAutoDetectedDefaults(settings);
+    if (JSON.stringify(settings) !== settingsBeforeAutoDetection) {
+      // 自动检测仅持久化非敏感本机设置；绝不触及密码或恢复密钥。
+      // Persist only non-sensitive local settings from auto-detection; never touch passwords or recovery keys.
+      await this.saveData(settings);
+    }
     this.settings = settings;
 
     // 2. 创建控制器
@@ -132,7 +143,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
         item
           .setTitle('配置为私密笔记库')
           .setIcon('lock')
-          .onClick(() => void this.configureAndUnlockVault(folderName));
+          .onClick(() => void this.configureAndUnlockVault(folder));
       });
     } else if (isMounted) {
       // 已挂载：提供锁定入口
@@ -143,6 +154,15 @@ export default class CryptomatorBridgePlugin extends Plugin {
           .onClick(() => this.lockVault(record.id, folderName));
       });
     } else {
+      const resolvedRecord = resolveVaultRecords(this.settings).find((candidate) => candidate.id === record.id);
+      if (resolvedRecord && !existsSync(resolvedRecord.encryptedVaultPath)) {
+        menu.addItem((item) => {
+          item
+            .setTitle('创建缺失的密文 Vault 并解锁')
+            .setIcon('file-plus')
+            .onClick(() => void this.createMissingVaultAndUnlock(record!, folderName));
+        });
+      }
       // 已配置但锁定：提供解锁和移除配置入口
       menu.addItem((item) => {
         item
@@ -170,51 +190,123 @@ export default class CryptomatorBridgePlugin extends Plugin {
 
   // ──────────── 配置 / 解锁 / 锁定 / 迁移 ────────────
 
-  private async configureAndUnlockVault(folderName: string): Promise<void> {
+  private async configureAndUnlockVault(folder: TFolder): Promise<void> {
     try {
-      const record = await this.configureVault(folderName);
-      if (!record) {
+      const configured = await this.configureVault(folder.name);
+      if (!configured) {
         return;
       }
-      // 配置完成后立即进入解锁，避免用户保存配置后不知道下一步操作。
-      // Continue to unlock immediately after setup so the next action is explicit to the user.
-      await this.unlockVault(record, folderName);
+      const unlocked = await this.unlockVault(configured.record, folder.name, configured.password);
+      configured.password = '';
+      if (!unlocked) return;
+      const migrate = await new ConfirmModal(
+        this.app,
+        '迁移原文件夹',
+        `「${folder.name}」已解锁。是否现在将原文件夹内容复制到新的私密笔记库？原文件不会自动删除。`,
+        '开始迁移',
+      ).open();
+      if (migrate) await this.migrateFolderToVault(folder);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       new Notice(`配置失败：${err.message}`);
     }
   }
 
-  private async configureVault(folderName: string): Promise<VaultRecord | undefined> {
+  private async configureVault(folderName: string): Promise<{ record: VaultRecord; password: string } | undefined> {
     const result = await new VaultSetupModal(this.app, folderName).open();
     if (!result) {
       return undefined;
     }
-
-    // 添加新记录
     const newRecord: VaultRecord = {
       id: crypto.randomUUID?.() ?? `${folderName}-${Date.now().toString(36)}`,
       folderName: result.folderName,
       nutstoreExclusionConfirmed: result.nutstoreExclusionConfirmed,
     };
-
+    let password = await this.createVaultForRecord(newRecord);
+    if (!password) return undefined;
     this.settings.vaultRecords.push(newRecord);
     try {
       await this.saveSettings();
     } catch (error) {
       this.settings.vaultRecords = this.settings.vaultRecords.filter((record) => record.id !== newRecord.id);
-      throw error;
+      password = '';
+      new Notice(`「${folderName}」密文 Vault 已创建，但插件设置未能保存，因此没有登记。密文目录已保留，您可修复设置后重新配置。`);
+      return undefined;
     }
-    new Notice(`已配置私密笔记库：${folderName}`);
-    return newRecord;
+    new Notice(`已创建并配置私密笔记库：${folderName}`);
+    return { record: newRecord, password };
   }
 
-  private async unlockVault(record: VaultRecord, folderName: string): Promise<void> {
+  private async createMissingVaultAndUnlock(record: VaultRecord, folderName: string): Promise<void> {
+    try {
+      let password = await this.createVaultForRecord(record);
+      if (!password) return;
+      try {
+        await this.saveSettings();
+      } catch {
+        password = '';
+        new Notice(`「${folderName}」密文 Vault 已创建，但插件设置未能保存。密文目录已保留，未自动解锁。`);
+        return;
+      }
+      await this.unlockVault(record, folderName, password);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      new Notice(`创建失败：${err.message}`);
+    }
+  }
+
+  private async createVaultForRecord(record: VaultRecord): Promise<string | null> {
+    const controlVaultPath = this.getVaultBasePath();
+    if (!controlVaultPath || resolve(this.settings.syncRootPath) !== resolve(controlVaultPath)) {
+      throw new Error('同步根路径必须与当前打开的控制 Vault 根目录一致。');
+    }
+    if (!record.nutstoreExclusionConfirmed) {
+      throw new Error('必须先确认 Nutstore 排除规则，才能创建 Vault。');
+    }
+    const prerequisiteErrors = await checkCreationPrerequisites(this.settings.cliPath, this.settings.mounterId);
+    if (prerequisiteErrors.length > 0) {
+      throw new Error(prerequisiteErrors.map((item) => item.message).join('；'));
+    }
+    let password = await new NewVaultPasswordModal(this.app, record.folderName).open();
+    if (!password) return null;
+    let staged: Awaited<ReturnType<typeof createVault>> | undefined;
+    let passwordHandedOff = false;
+    try {
+      password = validateNewVaultPassword(password, password);
+      const recoveryWords = await loadDesktopRecoveryWords();
+      staged = await createVault({
+        controlVaultPath,
+        encryptedVaultPath: join(controlVaultPath, `${record.folderName}.cryptomator`),
+        mountPath: join(controlVaultPath, `${record.folderName}.cryptomator-mount`),
+        password,
+        recoveryWords,
+      });
+      let recoveryKey = staged.recoveryKey;
+      const acknowledged = await new RecoveryKeyModal(this.app, recoveryKey).open();
+      recoveryKey = '';
+      if (!acknowledged) {
+        await staged.rollback();
+        password = '';
+        return null;
+      }
+      await staged.publish();
+      passwordHandedOff = true;
+      return password;
+    } catch (error) {
+      await staged?.rollback();
+      password = '';
+      throw error;
+    } finally {
+      if (!passwordHandedOff) password = '';
+    }
+  }
+
+  private async unlockVault(record: VaultRecord, folderName: string, initialPassword?: string): Promise<boolean> {
     // 门禁：Nutstore 排除确认
     if (!record.nutstoreExclusionConfirmed) {
       const confirmed = await new NutstoreExclusionModal(this.app, folderName).open();
       if (!confirmed) {
-        return;
+        return false;
       }
       // 持久化确认
       record.nutstoreExclusionConfirmed = true;
@@ -222,9 +314,9 @@ export default class CryptomatorBridgePlugin extends Plugin {
     }
 
     // 密码输入
-    let password = await new PasswordModal(this.app, folderName).open();
+    let password = initialPassword ?? await new PasswordModal(this.app, folderName).open();
     if (!password) {
-      return;
+      return false;
     }
 
     try {
@@ -233,7 +325,7 @@ export default class CryptomatorBridgePlugin extends Plugin {
       const resolvedRecord = resolved.find((r) => r.id === record.id);
       if (!resolvedRecord) {
         new Notice(`找不到记录配置：${folderName}`);
-        return;
+        return false;
       }
 
       const result = await this.controller.unlock(resolvedRecord, password);
@@ -241,10 +333,13 @@ export default class CryptomatorBridgePlugin extends Plugin {
         // 明文挂载目录由 Obsidian 的文件系统监视自动发现，无需手动刷新文件树。
         // The plaintext mount directory is auto-discovered by Obsidian's file watcher; no manual refresh needed.
         new Notice(`${folderName} 已解锁，明文目录 ${folderName}.cryptomator-mount 将出现在文件树中。`);
+        return true;
       }
+      return false;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       new Notice(`解锁失败：${err.message}`);
+      return false;
     } finally {
       password = '';
     }
@@ -328,9 +423,12 @@ export default class CryptomatorBridgePlugin extends Plugin {
     // 迁移入口也负责引导首次配置，避免用户先看到一个无法执行的确认框。
     // The migration entry also guides first-time setup, avoiding a confirmation dialog for an unavailable action.
     let record = this.settings.vaultRecords.find((r) => r.folderName === folder.name);
+    let initialPassword: string | undefined;
     if (!record) {
       try {
-        record = await this.configureVault(folder.name);
+        const configured = await this.configureVault(folder.name);
+        record = configured?.record;
+        initialPassword = configured?.password;
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         new Notice(`迁移准备失败：${err.message}`);
@@ -346,11 +444,13 @@ export default class CryptomatorBridgePlugin extends Plugin {
     let session = this.controller.getSession(record.id);
     if (!session || session.stateMachine.state.state !== 'mounted') {
       try {
-        await this.unlockVault(record, folder.name);
+        await this.unlockVault(record, folder.name, initialPassword);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         new Notice(`迁移准备失败：${err.message}`);
         return;
+      } finally {
+        initialPassword = undefined;
       }
       session = this.controller.getSession(record.id);
       if (!session || session.stateMachine.state.state !== 'mounted') {
@@ -509,13 +609,13 @@ class BridgeSettingTab extends PluginSettingTab {
           }
           try {
             const mounters = await discoverMounters(settings.cliPath);
-            if (mounters.length > 0) {
-              settings.mounterId = mounters[0];
+            if (mounters.includes(FOLDER_MOUNT_MOUNTER_ID)) {
+              settings.mounterId = FOLDER_MOUNT_MOUNTER_ID;
               await this.plugin.saveSettings();
               this.display();
-              new Notice(`已发现挂载器：${mounters[0]}`);
+              new Notice(`已选择目录挂载器：${FOLDER_MOUNT_MOUNTER_ID}`);
             } else {
-              new Notice('未发现可用的挂载器，请确认 WinFsp 已安装。');
+              new Notice('未发现支持目录挂载的 WinFspMountProvider，请确认 WinFsp 已安装。');
             }
           } catch (error) {
             new Notice('挂载器发现失败，请检查 CLI 路径。');
@@ -538,10 +638,10 @@ class BridgeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('挂载器 ID')
-      .setDesc('Cryptomator 挂载方式：WinFsp（Windows 推荐）、WebDAV 等。')
+      .setDesc('固定使用 WinFspMountProvider，才能把明文挂载到控制 Vault 的同级目录。')
       .addText((text) =>
         text
-          .setPlaceholder('org.cryptomator.frontend.webdav.mount.WebDavMounter')
+          .setPlaceholder(FOLDER_MOUNT_MOUNTER_ID)
           .setValue(settings.mounterId)
           .onChange(async (value) => {
             settings.mounterId = value.trim();
